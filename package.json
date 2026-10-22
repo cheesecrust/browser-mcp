@@ -21,12 +21,13 @@
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
-    "test": "npm run build && tsx test/smoke.test.ts && tsx test/http.test.ts",
+    "test": "npm run build && tsx test/smoke.test.ts && tsx test/http.test.ts && tsx test/oauth.test.ts",
     "inspector": "npx @modelcontextprotocol/inspector node dist/index.js",
     "browsers:install": "playwright install chromium",
     "test:stdio": "tsx test/smoke.test.ts",
     "test:http": "tsx test/http.test.ts",
-    "start:http": "node dist/index.js --http"
+    "start:http": "node dist/index.js --http",
+    "test:oauth": "tsx test/oauth.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/node": "^2.1.1",

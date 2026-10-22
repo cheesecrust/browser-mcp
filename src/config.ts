@@ -56,6 +56,22 @@ export interface Config {
   maxSessionsPerUser: number;
   /** Let the browser reach local files and private networks (default on for stdio, off for HTTP). */
   allowPrivateNetwork: boolean;
+
+  // ---- Kakao Login (OAuth) -------------------------------------------------------
+
+  /** Public base URL of this server as clients see it, e.g. https://browser.example.com (no trailing slash). */
+  publicUrl?: string;
+  /** REST API key of the Kakao app; when set, clients log in with their Kakao account. */
+  kakaoClientId?: string;
+  kakaoClientSecret?: string;
+  /** Comma-separated Kakao consent items to request, e.g. "account_email". */
+  kakaoScope?: string;
+  /** Kakao user ids and/or e-mail addresses that may use the server; "*" allows every Kakao account. */
+  allowedUsers: string[];
+  /** Lifetime of access tokens issued after Kakao login, in milliseconds. */
+  accessTokenTtlMs: number;
+  /** Kakao endpoints; only overridden through environment variables in tests. */
+  kakaoEndpoints: { authorizeUrl: string; tokenUrl: string; userInfoUrl: string };
 }
 
 export const DEFAULTS = {
@@ -70,6 +86,12 @@ export const DEFAULTS = {
   idleTimeoutSeconds: 900,
   maxSessions: 20,
   maxSessionsPerUser: 3,
+  accessTokenTtlSeconds: 24 * 60 * 60,
+  kakaoEndpoints: {
+    authorizeUrl: 'https://kauth.kakao.com/oauth/authorize',
+    tokenUrl: 'https://kauth.kakao.com/oauth/token',
+    userInfoUrl: 'https://kapi.kakao.com/v2/user/me',
+  },
 };
 
 export const USAGE = `browser-mcp ${VERSION} - MCP server that lets an AI control a browser through Playwright
@@ -107,6 +129,14 @@ Remote (HTTP) mode:
   --max-sessions-per-user <n> Concurrent sessions per user (default: ${DEFAULTS.maxSessionsPerUser})
   --allow-private-network    Let the browser open local files and private/loopback addresses (off by default with --http)
 
+Kakao Login (clients authenticate with a Kakao account instead of static tokens):
+  --public-url <url>         Public base URL of this server, e.g. https://browser.example.com (required)
+  --kakao-client-id <key>    REST API key of the Kakao app
+  --kakao-client-secret <s>  Client secret of the Kakao app (prefer BROWSER_MCP_KAKAO_CLIENT_SECRET)
+  --kakao-scope <scopes>     Consent items to request, comma separated, e.g. account_email
+  --allowed-users <list>     Kakao user ids and/or e-mails allowed to log in, comma separated; "*" allows everyone
+  --access-token-ttl <sec>   Lifetime of issued access tokens (default: ${DEFAULTS.accessTokenTtlSeconds})
+
   -h, --help                 Show this help
   -v, --version              Print the version
 
@@ -118,7 +148,9 @@ BROWSER_MCP_SNAPSHOT_MAX_CHARS, BROWSER_MCP_DOWNLOADS_DIR, BROWSER_MCP_PROXY, BR
 BROWSER_MCP_HTTP, BROWSER_MCP_HOST, BROWSER_MCP_PORT, BROWSER_MCP_TOKENS_FILE,
 BROWSER_MCP_TOKENS ("token1:alice,token2:bob"), BROWSER_MCP_ALLOW_UNAUTHENTICATED, BROWSER_MCP_DATA_DIR,
 BROWSER_MCP_IDLE_TIMEOUT, BROWSER_MCP_MAX_SESSIONS, BROWSER_MCP_MAX_SESSIONS_PER_USER,
-BROWSER_MCP_ALLOW_PRIVATE_NETWORK. Command-line flags take precedence.
+BROWSER_MCP_ALLOW_PRIVATE_NETWORK, BROWSER_MCP_PUBLIC_URL, BROWSER_MCP_KAKAO_CLIENT_ID,
+BROWSER_MCP_KAKAO_CLIENT_SECRET, BROWSER_MCP_KAKAO_SCOPE, BROWSER_MCP_ALLOWED_USERS,
+BROWSER_MCP_ACCESS_TOKEN_TTL. Command-line flags take precedence.
 `;
 
 export type ParsedArgs = { kind: 'run'; config: Config } | { kind: 'help' } | { kind: 'version' };
@@ -191,6 +223,12 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
         'max-sessions': { type: 'string' },
         'max-sessions-per-user': { type: 'string' },
         'allow-private-network': { type: 'boolean' },
+        'public-url': { type: 'string' },
+        'kakao-client-id': { type: 'string' },
+        'kakao-client-secret': { type: 'string' },
+        'kakao-scope': { type: 'string' },
+        'allowed-users': { type: 'string' },
+        'access-token-ttl': { type: 'string' },
       },
     }).values;
   } catch (error) {
@@ -229,6 +267,8 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
   const idleRaw = str('idle-timeout', 'IDLE_TIMEOUT');
   const maxSessionsRaw = str('max-sessions', 'MAX_SESSIONS');
   const maxPerUserRaw = str('max-sessions-per-user', 'MAX_SESSIONS_PER_USER');
+  const accessTtlRaw = str('access-token-ttl', 'ACCESS_TOKEN_TTL');
+  const allowedUsersRaw = str('allowed-users', 'ALLOWED_USERS');
 
   const config: Config = {
     browser,
@@ -261,6 +301,22 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
     maxSessions: maxSessionsRaw ? parsePositiveInt(maxSessionsRaw, '--max-sessions') : DEFAULTS.maxSessions,
     maxSessionsPerUser: maxPerUserRaw ? parsePositiveInt(maxPerUserRaw, '--max-sessions-per-user') : DEFAULTS.maxSessionsPerUser,
     allowPrivateNetwork: bool('allow-private-network', 'ALLOW_PRIVATE_NETWORK') ?? !http,
+    publicUrl: str('public-url', 'PUBLIC_URL')?.replace(/\/+$/, ''),
+    kakaoClientId: str('kakao-client-id', 'KAKAO_CLIENT_ID'),
+    kakaoClientSecret: str('kakao-client-secret', 'KAKAO_CLIENT_SECRET'),
+    kakaoScope: str('kakao-scope', 'KAKAO_SCOPE'),
+    allowedUsers: allowedUsersRaw
+      ? allowedUsersRaw
+          .split(',')
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+      : [],
+    accessTokenTtlMs: (accessTtlRaw ? parsePositiveInt(accessTtlRaw, '--access-token-ttl') : DEFAULTS.accessTokenTtlSeconds) * 1_000,
+    kakaoEndpoints: {
+      authorizeUrl: env.BROWSER_MCP_KAKAO_AUTHORIZE_URL?.trim() || DEFAULTS.kakaoEndpoints.authorizeUrl,
+      tokenUrl: env.BROWSER_MCP_KAKAO_TOKEN_URL?.trim() || DEFAULTS.kakaoEndpoints.tokenUrl,
+      userInfoUrl: env.BROWSER_MCP_KAKAO_USERINFO_URL?.trim() || DEFAULTS.kakaoEndpoints.userInfoUrl,
+    },
   };
 
   if (config.proxyBypass && !config.proxy) {
@@ -279,16 +335,35 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
         '--user-data-dir cannot be used with --http: every session gets its own browser, and logins are kept per user under --data-dir',
       );
     }
-    if (config.tokens.length === 0 && !config.allowUnauthenticated) {
+    const hasAuth = config.tokens.length > 0 || config.kakaoClientId !== undefined;
+    if (!hasAuth && !config.allowUnauthenticated) {
       throw new ConfigError(
-        'HTTP mode needs user tokens (--tokens-file or BROWSER_MCP_TOKENS). Pass --allow-unauthenticated only for a test server on 127.0.0.1',
+        'HTTP mode needs a way to identify users: Kakao login (--kakao-client-id with --public-url) or static tokens (--tokens-file / BROWSER_MCP_TOKENS). ' +
+          'Pass --allow-unauthenticated only for a test server on 127.0.0.1',
       );
     }
-    if (config.tokens.length === 0 && !isLoopbackHost(config.host)) {
-      throw new ConfigError(`refusing to listen on ${config.host} without user tokens; --allow-unauthenticated only works on a loopback address`);
+    if (!hasAuth && !isLoopbackHost(config.host)) {
+      throw new ConfigError(`refusing to listen on ${config.host} without authentication; --allow-unauthenticated only works on a loopback address`);
     }
-  } else if (config.allowUnauthenticated || config.tokens.length > 0) {
-    throw new ConfigError('--allow-unauthenticated and tokens only apply to --http mode');
+    if (config.kakaoClientId) {
+      if (!config.publicUrl) throw new ConfigError('--public-url is required with --kakao-client-id (clients are redirected back to it)');
+      let parsed: URL;
+      try {
+        parsed = new URL(config.publicUrl);
+      } catch {
+        throw new ConfigError(`--public-url must be an absolute URL (got "${config.publicUrl}")`);
+      }
+      if (parsed.protocol !== 'https:' && !isLoopbackHost(parsed.hostname)) {
+        throw new ConfigError('--public-url must use https (plain http is only accepted for a loopback address)');
+      }
+      if (parsed.search || parsed.hash || (parsed.pathname !== '/' && parsed.pathname !== '')) {
+        throw new ConfigError('--public-url must be the origin only, without a path (e.g. https://browser.example.com)');
+      }
+    } else if (config.kakaoClientSecret || config.kakaoScope || config.allowedUsers.length > 0) {
+      throw new ConfigError('--kakao-client-secret, --kakao-scope and --allowed-users require --kakao-client-id');
+    }
+  } else if (config.allowUnauthenticated || config.tokens.length > 0 || config.kakaoClientId) {
+    throw new ConfigError('--allow-unauthenticated, tokens and Kakao login only apply to --http mode');
   }
 
   return { kind: 'run', config };
