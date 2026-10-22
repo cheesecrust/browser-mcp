@@ -4,3 +4,6 @@ dist/
 .DS_Store
 .claude/settings.local.json
 .idea/
+data/
+.env
+tokens.json

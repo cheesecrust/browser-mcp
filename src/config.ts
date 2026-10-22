@@ -1,5 +1,11 @@
 import { createRequire } from 'node:module';
+import os from 'node:os';
+import path from 'node:path';
 import { parseArgs } from 'node:util';
+import { loadTokens, type TokenEntry } from './auth.js';
+import { ConfigError } from './errors.js';
+
+export { ConfigError } from './errors.js';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version: string };
@@ -31,6 +37,25 @@ export interface Config {
   proxy?: string;
   /** Comma-separated hosts that bypass the proxy, e.g. "localhost,*.internal". */
   proxyBypass?: string;
+
+  // ---- remote (HTTP) mode -----------------------------------------------------
+
+  /** Serve MCP over Streamable HTTP for remote clients instead of stdio. */
+  http: boolean;
+  host: string;
+  port: number;
+  /** Bearer tokens that identify users of a shared server. */
+  tokens: TokenEntry[];
+  /** Run an HTTP server without tokens (only allowed on a loopback address). */
+  allowUnauthenticated: boolean;
+  /** Where per-user state lives in HTTP mode: storage state, downloads, uploads, screenshots. */
+  dataDir: string;
+  /** Sessions without tool calls for this long are closed, in milliseconds. */
+  idleTimeoutMs: number;
+  maxSessions: number;
+  maxSessionsPerUser: number;
+  /** Let the browser reach local files and private networks (default on for stdio, off for HTTP). */
+  allowPrivateNetwork: boolean;
 }
 
 export const DEFAULTS = {
@@ -40,19 +65,24 @@ export const DEFAULTS = {
   actionTimeout: 15_000,
   navigationTimeout: 30_000,
   snapshotMaxChars: 30_000,
+  host: '127.0.0.1',
+  port: 3000,
+  idleTimeoutSeconds: 900,
+  maxSessions: 20,
+  maxSessionsPerUser: 3,
 };
 
 export const USAGE = `browser-mcp ${VERSION} - MCP server that lets an AI control a browser through Playwright
 
 Usage: browser-mcp [options]
 
-Options:
-  --headless                 Run the browser without a visible window (default: headed)
+Browser options:
+  --headless                 Run the browser without a visible window (default: headed; always headless with --http)
   --headed                   Force a visible window (overrides BROWSER_MCP_HEADLESS)
   --browser <name>           chromium | firefox | webkit (default: chromium)
   --channel <channel>        Use an installed browser channel, e.g. chrome, msedge, chrome-beta
   --executable-path <path>   Launch a specific browser binary
-  --user-data-dir <dir>      Persistent profile directory (keeps logins and cookies between runs)
+  --user-data-dir <dir>      Persistent profile directory (keeps logins and cookies between runs; stdio mode only)
   --storage-state <file>     Playwright storage-state JSON to load (cookies, localStorage)
   --viewport <WxH>           Viewport size (default: ${DEFAULTS.viewport.width}x${DEFAULTS.viewport.height})
   --timeout <ms>             Default action timeout (default: ${DEFAULTS.actionTimeout})
@@ -61,9 +91,22 @@ Options:
   --locale <locale>          Browser locale, e.g. ko-KR
   --ignore-https-errors      Ignore TLS certificate errors
   --snapshot-max-chars <n>   Truncate accessibility snapshots beyond this size (default: ${DEFAULTS.snapshotMaxChars})
-  --downloads-dir <dir>      Where downloaded files are saved (default: OS temp dir)
+  --downloads-dir <dir>      Where downloaded files are saved (default: OS temp dir; per-user folder with --http)
   --proxy <url>              Proxy for the browser, e.g. http://proxy.example.com:3128 or socks5://host:1080
   --proxy-bypass <hosts>     Comma-separated hosts that bypass the proxy, e.g. "localhost,*.internal"
+
+Remote (HTTP) mode:
+  --http                     Serve MCP over Streamable HTTP at /mcp instead of stdio
+  --host <host>              Address to listen on (default: ${DEFAULTS.host}; use 0.0.0.0 inside a container)
+  --port <port>              Port to listen on (default: ${DEFAULTS.port}; 0 picks a free port)
+  --tokens-file <file>       JSON file mapping bearer tokens to user names (see README)
+  --allow-unauthenticated    Accept requests without a token (loopback address only)
+  --data-dir <dir>           Per-user state directory (default: ~/.browser-mcp)
+  --idle-timeout <seconds>   Close sessions idle for this long (default: ${DEFAULTS.idleTimeoutSeconds})
+  --max-sessions <n>         Total concurrent sessions (default: ${DEFAULTS.maxSessions})
+  --max-sessions-per-user <n> Concurrent sessions per user (default: ${DEFAULTS.maxSessionsPerUser})
+  --allow-private-network    Let the browser open local files and private/loopback addresses (off by default with --http)
+
   -h, --help                 Show this help
   -v, --version              Print the version
 
@@ -71,21 +114,23 @@ Every option can also be set through an environment variable: BROWSER_MCP_HEADLE
 BROWSER_MCP_BROWSER, BROWSER_MCP_CHANNEL, BROWSER_MCP_EXECUTABLE_PATH, BROWSER_MCP_USER_DATA_DIR,
 BROWSER_MCP_STORAGE_STATE, BROWSER_MCP_VIEWPORT, BROWSER_MCP_TIMEOUT, BROWSER_MCP_NAVIGATION_TIMEOUT,
 BROWSER_MCP_USER_AGENT, BROWSER_MCP_LOCALE, BROWSER_MCP_IGNORE_HTTPS_ERRORS,
-BROWSER_MCP_SNAPSHOT_MAX_CHARS, BROWSER_MCP_DOWNLOADS_DIR, BROWSER_MCP_PROXY, BROWSER_MCP_PROXY_BYPASS.
-Command-line flags take precedence.
+BROWSER_MCP_SNAPSHOT_MAX_CHARS, BROWSER_MCP_DOWNLOADS_DIR, BROWSER_MCP_PROXY, BROWSER_MCP_PROXY_BYPASS,
+BROWSER_MCP_HTTP, BROWSER_MCP_HOST, BROWSER_MCP_PORT, BROWSER_MCP_TOKENS_FILE,
+BROWSER_MCP_TOKENS ("token1:alice,token2:bob"), BROWSER_MCP_ALLOW_UNAUTHENTICATED, BROWSER_MCP_DATA_DIR,
+BROWSER_MCP_IDLE_TIMEOUT, BROWSER_MCP_MAX_SESSIONS, BROWSER_MCP_MAX_SESSIONS_PER_USER,
+BROWSER_MCP_ALLOW_PRIVATE_NETWORK. Command-line flags take precedence.
 `;
-
-export class ConfigError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ConfigError';
-  }
-}
 
 export type ParsedArgs = { kind: 'run'; config: Config } | { kind: 'help' } | { kind: 'version' };
 
 function isBrowserName(value: string): value is BrowserName {
   return (BROWSER_NAMES as readonly string[]).includes(value);
+}
+
+/** True for addresses that only the local machine can reach. */
+export function isLoopbackHost(host: string): boolean {
+  const value = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return value === 'localhost' || value === '::1' || value === '::ffff:127.0.0.1' || /^127\.\d+\.\d+\.\d+$/.test(value);
 }
 
 function parseViewport(value: string, source: string): { width: number; height: number } {
@@ -100,6 +145,12 @@ function parseViewport(value: string, source: string): { width: number; height: 
 function parsePositiveInt(value: string, source: string): number {
   const n = Number(value);
   if (!Number.isInteger(n) || n <= 0) throw new ConfigError(`${source} must be a positive integer (got "${value}")`);
+  return n;
+}
+
+function parsePort(value: string, source: string): number {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0 || n > 65_535) throw new ConfigError(`${source} must be a port number 0-65535 (got "${value}")`);
   return n;
 }
 
@@ -130,6 +181,16 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
         'downloads-dir': { type: 'string' },
         proxy: { type: 'string' },
         'proxy-bypass': { type: 'string' },
+        http: { type: 'boolean' },
+        host: { type: 'string' },
+        port: { type: 'string' },
+        'tokens-file': { type: 'string' },
+        'allow-unauthenticated': { type: 'boolean' },
+        'data-dir': { type: 'string' },
+        'idle-timeout': { type: 'string' },
+        'max-sessions': { type: 'string' },
+        'max-sessions-per-user': { type: 'string' },
+        'allow-private-network': { type: 'boolean' },
       },
     }).values;
   } catch (error) {
@@ -157,11 +218,17 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
     throw new ConfigError(`--browser must be one of ${BROWSER_NAMES.join(', ')} (got "${browser}")`);
   }
 
-  const headless = values.headed === true ? false : (bool('headless', 'HEADLESS') ?? DEFAULTS.headless);
+  const http = bool('http', 'HTTP') ?? false;
+  // A remote server has no display, so HTTP mode is headless unless --headed is given explicitly.
+  const headless = values.headed === true ? false : (bool('headless', 'HEADLESS') ?? (http ? true : DEFAULTS.headless));
   const viewportRaw = str('viewport', 'VIEWPORT');
   const timeoutRaw = str('timeout', 'TIMEOUT');
   const navigationTimeoutRaw = str('navigation-timeout', 'NAVIGATION_TIMEOUT');
   const snapshotMaxRaw = str('snapshot-max-chars', 'SNAPSHOT_MAX_CHARS');
+  const portRaw = str('port', 'PORT');
+  const idleRaw = str('idle-timeout', 'IDLE_TIMEOUT');
+  const maxSessionsRaw = str('max-sessions', 'MAX_SESSIONS');
+  const maxPerUserRaw = str('max-sessions-per-user', 'MAX_SESSIONS_PER_USER');
 
   const config: Config = {
     browser,
@@ -184,6 +251,16 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
     downloadsDir: str('downloads-dir', 'DOWNLOADS_DIR'),
     proxy: str('proxy', 'PROXY'),
     proxyBypass: str('proxy-bypass', 'PROXY_BYPASS'),
+    http,
+    host: str('host', 'HOST') ?? DEFAULTS.host,
+    port: portRaw ? parsePort(portRaw, '--port') : DEFAULTS.port,
+    tokens: http ? loadTokens(str('tokens-file', 'TOKENS_FILE'), env.BROWSER_MCP_TOKENS) : [],
+    allowUnauthenticated: bool('allow-unauthenticated', 'ALLOW_UNAUTHENTICATED') ?? false,
+    dataDir: str('data-dir', 'DATA_DIR') ?? path.join(os.homedir(), '.browser-mcp'),
+    idleTimeoutMs: (idleRaw ? parsePositiveInt(idleRaw, '--idle-timeout') : DEFAULTS.idleTimeoutSeconds) * 1_000,
+    maxSessions: maxSessionsRaw ? parsePositiveInt(maxSessionsRaw, '--max-sessions') : DEFAULTS.maxSessions,
+    maxSessionsPerUser: maxPerUserRaw ? parsePositiveInt(maxPerUserRaw, '--max-sessions-per-user') : DEFAULTS.maxSessionsPerUser,
+    allowPrivateNetwork: bool('allow-private-network', 'ALLOW_PRIVATE_NETWORK') ?? !http,
   };
 
   if (config.proxyBypass && !config.proxy) {
@@ -194,6 +271,24 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
     throw new ConfigError(
       '--storage-state cannot be combined with --user-data-dir (a persistent profile has its own storage)',
     );
+  }
+
+  if (config.http) {
+    if (config.userDataDir) {
+      throw new ConfigError(
+        '--user-data-dir cannot be used with --http: every session gets its own browser, and logins are kept per user under --data-dir',
+      );
+    }
+    if (config.tokens.length === 0 && !config.allowUnauthenticated) {
+      throw new ConfigError(
+        'HTTP mode needs user tokens (--tokens-file or BROWSER_MCP_TOKENS). Pass --allow-unauthenticated only for a test server on 127.0.0.1',
+      );
+    }
+    if (config.tokens.length === 0 && !isLoopbackHost(config.host)) {
+      throw new ConfigError(`refusing to listen on ${config.host} without user tokens; --allow-unauthenticated only works on a loopback address`);
+    }
+  } else if (config.allowUnauthenticated || config.tokens.length > 0) {
+    throw new ConfigError('--allow-unauthenticated and tokens only apply to --http mode');
   }
 
   return { kind: 'run', config };

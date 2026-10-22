@@ -1,4 +1,4 @@
-import { mkdir } from 'node:fs/promises';
+import { access, mkdir, rename, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium, firefox, webkit } from 'playwright';
@@ -16,6 +16,7 @@ import type {
 } from 'playwright';
 import type { BrowserName, Config } from './config.js';
 import { log } from './log.js';
+import { isBlockedScheme, logBlocked, type UrlGuard } from './policy.js';
 
 /** An error whose message is written for the AI agent and returned as-is. */
 export class UserError extends Error {
@@ -53,6 +54,25 @@ export interface ElementTarget {
   ref?: string | undefined;
   selector?: string | undefined;
 }
+
+/** Per-user folders on a shared server; paths given by the agent are confined to these. */
+export interface Workspace {
+  root: string;
+  downloads: string;
+  files: string;
+  screenshots: string;
+}
+
+export interface BrowserSessionOptions {
+  workspace?: Workspace;
+  /** JSON file with this user's cookies and storage: loaded at launch, saved after actions and on close. */
+  storageStatePath?: string;
+  /** Refuses URLs that point at local files or private networks. */
+  guard?: UrlGuard;
+}
+
+const PERSIST_DELAY_MS = 2_000;
+const PERSIST_TIMEOUT_MS = 5_000;
 
 interface PageState {
   console: ConsoleEntry[];
@@ -108,12 +128,22 @@ export class BrowserSession {
   private launching?: Promise<BrowserContext>;
   private readonly pages = new Map<Page, PageState>();
   private activePage?: Page;
+  private persistTimer?: NodeJS.Timeout;
+  private readonly blockedSeen = new Set<string>();
   readonly downloads: DownloadEntry[] = [];
 
-  constructor(readonly config: Config) {}
+  constructor(
+    readonly config: Config,
+    readonly options: BrowserSessionOptions = {},
+  ) {}
 
   get running(): boolean {
     return this.context !== undefined;
+  }
+
+  /** URL of the active tab, for log lines. */
+  activeUrl(): string | undefined {
+    return this.activePage && !this.activePage.isClosed() ? this.activePage.url() : undefined;
   }
 
   async ensureContext(): Promise<BrowserContext> {
@@ -154,11 +184,13 @@ export class BrowserSession {
     } else {
       const browser = await engine.launch(launchOptions);
       this.browser = browser;
-      context = await browser.newContext(compact({ ...contextOptions, storageState: config.storageState }));
+      const storageState = await this.initialStorageState();
+      context = await browser.newContext(compact({ ...contextOptions, storageState }));
     }
 
     context.setDefaultTimeout(config.actionTimeout);
     context.setDefaultNavigationTimeout(config.navigationTimeout);
+    if (this.options.guard) await this.installGuard(context, this.options.guard);
     context.on('page', (page) => this.attachPage(page));
     context.on('close', () => {
       if (this.context === context) {
@@ -171,6 +203,94 @@ export class BrowserSession {
     return context;
   }
 
+  /** The user's saved state when it exists, otherwise the configured seed file (if any). */
+  private async initialStorageState(): Promise<string | undefined> {
+    const saved = this.options.storageStatePath;
+    if (saved) {
+      const exists = await access(saved).then(() => true, () => false);
+      if (exists) return saved;
+    }
+    return this.config.storageState;
+  }
+
+  /** Every request the browser makes is checked against the network policy; refused ones fail like a blocked request. */
+  private async installGuard(context: BrowserContext, guard: UrlGuard): Promise<void> {
+    await context.route('**/*', async (route, request) => {
+      const url = request.url();
+      const reason = await guard.check(url).catch(() => 'the URL could not be checked');
+      if (reason) {
+        logBlocked(reason, url, this.blockedSeen);
+        await route.abort('blockedbyclient').catch(() => undefined);
+        return;
+      }
+      await route.continue().catch(() => undefined);
+    });
+  }
+
+  /** Refuses a URL the network policy does not allow; a no-op without a guard (local use). */
+  async checkUrl(url: string): Promise<void> {
+    const guard = this.options.guard;
+    if (!guard) return;
+    const reason = await guard.check(url);
+    if (reason) throw new UserError(`Cannot open ${url}: ${reason}.`);
+  }
+
+  /**
+   * Maps an agent-supplied path to a real path. Without a workspace (local use) the path is
+   * used as given; with one, relative paths land in the matching workspace folder and anything
+   * outside the workspace is refused.
+   */
+  resolvePath(input: string, kind: 'files' | 'screenshots'): string {
+    const workspace = this.options.workspace;
+    if (!workspace) return path.resolve(input);
+    const resolved = path.resolve(workspace[kind], input);
+    const relative = path.relative(workspace.root, resolved);
+    if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new UserError(
+        `Paths on this server must stay inside your workspace. Use a relative path such as "${path.basename(input) || 'file'}"; ` +
+          `it is stored under the ${kind} folder of your workspace.`,
+      );
+    }
+    return resolved;
+  }
+
+  /** How a path should be shown to the agent: relative to the workspace when there is one. */
+  displayPath(resolved: string): string {
+    const workspace = this.options.workspace;
+    return workspace ? path.relative(workspace.root, resolved) : resolved;
+  }
+
+  /** Saves cookies and storage to the user's state file shortly after an action (debounced). */
+  schedulePersist(): void {
+    if (!this.options.storageStatePath || !this.context || this.persistTimer) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = undefined;
+      void this.persistState();
+    }, PERSIST_DELAY_MS);
+    this.persistTimer.unref();
+  }
+
+  /** Writes the context's cookies and storage to the user's state file. */
+  async persistState(): Promise<void> {
+    const target = this.options.storageStatePath;
+    const context = this.context;
+    if (!target || !context) return;
+    // Reading storage evaluates in pages; a page with an open dialog would never answer.
+    if (this.tabs().some((page) => this.dialogFor(page))) return;
+    try {
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('timed out')), PERSIST_TIMEOUT_MS).unref(),
+      );
+      const state = await Promise.race([context.storageState(), timeout]);
+      await mkdir(path.dirname(target), { recursive: true });
+      const tmp = `${target}.${process.pid}.tmp`;
+      await writeFile(tmp, JSON.stringify(state), { mode: 0o600 });
+      await rename(tmp, target);
+    } catch (error) {
+      log(`could not save storage state: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private reset(): void {
     this.browser = undefined;
     this.context = undefined;
@@ -179,6 +299,11 @@ export class BrowserSession {
   }
 
   async close(): Promise<void> {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = undefined;
+    }
+    await this.persistState();
     const { context, browser } = this;
     this.reset();
     if (context) await context.close().catch(() => undefined);
@@ -229,6 +354,15 @@ export class BrowserSession {
       if (entry) entry.failure = request.failure()?.errorText ?? 'failed';
     });
     page.on('download', (download) => void this.saveDownload(download));
+    if (this.options.guard) {
+      // Belt and braces: a navigation to a browser-internal or file URL that slipped past the
+      // request check (those schemes are not routed) is undone immediately.
+      page.on('framenavigated', (frame) => {
+        if (frame !== page.mainFrame() || !isBlockedScheme(frame.url())) return;
+        logBlocked('blocked scheme', frame.url(), this.blockedSeen);
+        void page.goto('about:blank').catch(() => undefined);
+      });
+    }
     page.on('close', () => {
       this.pages.delete(page);
       if (this.activePage === page) this.activePage = this.tabs().at(-1);
@@ -243,7 +377,7 @@ export class BrowserSession {
     };
     this.downloads.push(entry);
     try {
-      const dir = this.config.downloadsDir ?? path.join(os.tmpdir(), 'browser-mcp-downloads');
+      const dir = this.options.workspace?.downloads ?? this.config.downloadsDir ?? path.join(os.tmpdir(), 'browser-mcp-downloads');
       await mkdir(dir, { recursive: true });
       const target = path.join(dir, `${Date.now()}-${path.basename(entry.suggestedFilename) || 'download'}`);
       await download.saveAs(target);
@@ -277,6 +411,7 @@ export class BrowserSession {
   }
 
   async newTab(url?: string): Promise<Page> {
+    if (url) await this.checkUrl(url);
     const context = await this.ensureContext();
     const page = await context.newPage();
     this.attachPage(page);

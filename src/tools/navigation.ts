@@ -24,6 +24,7 @@ export function registerNavigationTools(tool: ToolRegistrar): void {
       const page = await session.page();
       session.assertNoDialog(page);
       const target = normalizeUrl(url);
+      await session.checkUrl(target);
       const tabsBefore = session.tabs();
       // A page that shows an alert while loading never fires "load"; report the dialog instead of timing out.
       const outcome = await session.raceDialog(page, page.goto(target, { waitUntil: waitUntil ?? 'load' }));

@@ -1,0 +1,6 @@
+{
+  "tokens": [
+    { "token": "replace-with-a-long-random-token", "user": "alice" },
+    { "token": "another-long-random-token", "user": "bob" }
+  ]
+}

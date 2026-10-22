@@ -7,6 +7,7 @@ AI 에이전트(Claude Code, Claude Desktop, Cursor 등)가 **실제 브라우�
 - 모든 액션이 **변경된 페이지 스냅샷을 함께 반환**하므로 왕복 횟수가 적음
 - 스크린샷, 텍스트 추출, JavaScript 실행, 탭 관리, 다이얼로그 처리, 콘솔/네트워크 로그 조회
 - 헤드리스/헤디드, Chromium/Firefox/WebKit, 설치된 Chrome 사용, 로그인 유지용 영속 프로필 지원
+- **원격(HTTP) 모드**: 서버 한 대를 여러 사람이 토큰으로 나눠 쓰고, 사용자별로 브라우저·로그인 상태가 분리됨 ([아래 참고](#원격http-모드-서버-한-대를-여러-사람이-쓰기))
 
 ## 요구 사항
 
@@ -99,6 +100,71 @@ claude mcp add --scope user browser -- node /path/to/browser-mcp/dist/index.js -
 - 도구 호출은 서버 안에서 **직렬화**되어 실행됩니다(동시에 두 액션이 한 페이지를 건드리지 않음).
 - 다운로드는 자동으로 저장되며(`--downloads-dir`, 기본은 OS 임시 디렉터리) 서버 stderr 로그에 경로가 찍힙니다.
 
+## 원격(HTTP) 모드: 서버 한 대를 여러 사람이 쓰기
+
+`--http`를 주면 stdio 대신 Streamable HTTP(`/mcp`)로 서비스합니다. 접속한 클라이언트마다 MCP 세션이 하나 생기고,
+세션마다 Chromium이 따로 떠서 탭과 쿠키가 섞이지 않습니다. 사용자는 Bearer 토큰으로 식별되고,
+로그인 상태(쿠키·스토리지)는 사용자별로 저장돼 다음 세션에서 이어집니다.
+
+### 서버 실행
+
+토큰은 16자 이상의 무작위 문자열이면 되고, 환경 변수 또는 JSON 파일로 넘깁니다.
+
+```bash
+# 토큰 생성
+node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"
+
+# 환경 변수로 (token:user 쌍을 쉼표로 구분)
+BROWSER_MCP_TOKENS="<토큰1>:alice,<토큰2>:bob" node dist/index.js --http --host 0.0.0.0 --port 3000
+
+# 또는 파일로 (tokens.example.json 참고)
+node dist/index.js --http --host 0.0.0.0 --tokens-file tokens.json
+```
+
+HTTP 모드는 항상 헤드리스이며, 토큰 없이는 127.0.0.1에서만(`--allow-unauthenticated`) 뜹니다.
+토큰이 헤더로 오가므로 외부에 열 때는 반드시 HTTPS 리버스 프록시 뒤에 두세요. `GET /healthz`가 상태와 세션 수를 돌려줍니다.
+
+Docker로 올리려면:
+
+```bash
+cp .env.example .env               # BROWSER_MCP_TOKENS 입력, HTTPS를 쓰면 DOMAIN도
+docker compose up -d --build       # 127.0.0.1:3000 에 HTTP로 (앞에 자체 리버스 프록시를 두는 경우)
+docker compose --profile https up -d --build   # Caddy가 $DOMAIN 의 인증서를 받아 HTTPS 로 서비스
+```
+
+이미지는 Playwright 공식 이미지(Chromium과 의존성 포함, 비root 사용자) 위에 만들어지고,
+사용자 데이터는 `/data` 볼륨에 남습니다. Chromium이 `/dev/shm`을 쓰므로 compose 파일이 `shm_size`를 1 GB로 잡습니다.
+
+### 클라이언트 등록
+
+```bash
+# Claude Code
+claude mcp add --transport http --scope user browser https://<호스트>/mcp --header "Authorization: Bearer <토큰>"
+```
+
+```toml
+# Codex (~/.codex/config.toml)
+[mcp_servers.browser]
+url = "https://<호스트>/mcp"
+bearer_token_env_var = "BROWSER_MCP_TOKEN"   # 토큰을 담은 환경 변수 이름
+```
+
+```json
+// Cursor 등 JSON 설정
+{ "mcpServers": { "browser": { "url": "https://<호스트>/mcp", "headers": { "Authorization": "Bearer <토큰>" } } } }
+```
+
+ChatGPT 웹 커넥터는 OAuth 또는 무인증 서버만 받으므로 아직 연결할 수 없습니다(다음 단계).
+
+### 동작과 제한
+
+- **세션**: 도구 호출이 없는 채로 `--idle-timeout`(기본 15분)이 지나면 브라우저가 닫히고 세션이 끝납니다. 사용자당 `--max-sessions-per-user`(기본 3), 전체 `--max-sessions`(기본 20)까지 동시에 열 수 있고, 클라이언트는 `DELETE /mcp`로 세션을 바로 끝낼 수 있습니다.
+- **사용자별 데이터**: `<data-dir>/users/<user>/`에 `storage-state.json`(로그인 상태), `downloads/`, `files/`(업로드용), `screenshots/`가 생깁니다. `browser_file_upload`의 경로와 `browser_screenshot`의 `savePath`는 이 안으로 제한되며 상대 경로로 씁니다.
+- **네트워크 정책**: 기본으로 공개 웹 사이트만 열 수 있습니다. `file://`, `chrome://`, `localhost`, 사설 IP 대역, 링크로컬(클라우드 메타데이터 주소 포함), 사설 IP로 풀리는 도메인은 페이지 이동뿐 아니라 페이지 안의 하위 요청까지 차단됩니다. 사내망 사이트를 다뤄야 하면 `--allow-private-network`를 주세요.
+- **로그인**: 서버에는 화면이 없어서 사람이 직접 로그인할 수 없습니다. 2단계 인증이나 SSO가 필요한 사이트는 로컬에서 로그인한 뒤 Playwright storage state 파일을 `<data-dir>/users/<user>/storage-state.json`으로 복사하면 그 상태로 시작합니다. 화면을 넘겨받아 직접 로그인하는 기능은 다음 단계입니다.
+- **로그**: 도구 호출마다 `user=… session=… tool=… ok=… ms=… url=…` 한 줄이 stderr에 남습니다.
+- **프로토콜**: 세션 ID(`Mcp-Session-Id`) 기반 Streamable HTTP입니다. Claude Code, Codex, Cursor, OpenAI Responses API의 mcp 도구가 쓰는 방식입니다.
+
 ## 실행 옵션
 
 모든 옵션은 CLI 플래그 또는 `BROWSER_MCP_*` 환경 변수로 지정할 수 있습니다(플래그 우선).
@@ -121,6 +187,16 @@ claude mcp add --scope user browser -- node /path/to/browser-mcp/dist/index.js -
 | `--downloads-dir <dir>` | `BROWSER_MCP_DOWNLOADS_DIR` | OS temp | 다운로드 저장 위치 |
 | `--proxy <url>` | `BROWSER_MCP_PROXY` | | 브라우저가 사용할 프록시 (`http://host:3128`, `socks5://host:1080`) |
 | `--proxy-bypass <hosts>` | `BROWSER_MCP_PROXY_BYPASS` | | 프록시를 거치지 않을 호스트 (`localhost,*.internal`) |
+| `--http` | `BROWSER_MCP_HTTP` | off | stdio 대신 Streamable HTTP(`/mcp`)로 서비스 |
+| `--host <host>` | `BROWSER_MCP_HOST` | `127.0.0.1` | 수신 주소 (컨테이너 안에서는 `0.0.0.0`) |
+| `--port <port>` | `BROWSER_MCP_PORT` | `3000` | 수신 포트 (`0`이면 빈 포트) |
+| `--tokens-file <file>` | `BROWSER_MCP_TOKENS_FILE` | | 토큰→사용자 JSON 파일. 환경 변수 `BROWSER_MCP_TOKENS`(`token:user,...`)로도 지정 |
+| `--allow-unauthenticated` | `BROWSER_MCP_ALLOW_UNAUTHENTICATED` | off | 토큰 없이 서비스 (127.0.0.1 전용) |
+| `--data-dir <dir>` | `BROWSER_MCP_DATA_DIR` | `~/.browser-mcp` | 사용자별 상태 디렉터리 |
+| `--idle-timeout <sec>` | `BROWSER_MCP_IDLE_TIMEOUT` | `900` | 유휴 세션 종료 시간 |
+| `--max-sessions <n>` | `BROWSER_MCP_MAX_SESSIONS` | `20` | 전체 동시 세션 수 |
+| `--max-sessions-per-user <n>` | `BROWSER_MCP_MAX_SESSIONS_PER_USER` | `3` | 사용자당 동시 세션 수 |
+| `--allow-private-network` | `BROWSER_MCP_ALLOW_PRIVATE_NETWORK` | stdio: on / http: off | 로컬 파일과 사설망 접근 허용 |
 
 예: 로그인 상태를 유지하면서 설치된 Chrome으로 실행
 
@@ -134,20 +210,28 @@ node dist/index.js --channel chrome --user-data-dir ~/.browser-mcp-profile
 npm run dev          # tsx로 소스 직접 실행 (stdio)
 npm run build        # dist/ 로 컴파일
 npm run typecheck    # 소스 + 테스트 타입 검사
-npm test             # 빌드 후 헤드리스 Chromium으로 엔드투엔드 스모크 테스트
+npm test             # 빌드 후 stdio 스모크 테스트와 HTTP 모드 테스트를 모두 실행
+npm run test:stdio   # stdio 스모크 테스트만
+npm run test:http    # HTTP 모드 테스트만
+npm run start:http   # 빌드된 서버를 HTTP 모드로 실행 (토큰 환경 변수 필요)
 npm run inspector    # MCP Inspector로 도구를 직접 호출해 보기
 ```
 
 `npm test`는 로컬 HTTP 픽스처 서버를 띄우고, MCP 클라이언트로 서버 프로세스를 실제로 spawn 해서
-탐색·클릭·폼 입력·다이얼로그·탭·스크린샷·업로드 등 모든 도구를 검증합니다.
+탐색·클릭·폼 입력·다이얼로그·탭·스크린샷·업로드 등 모든 도구를 검증합니다. HTTP 모드 테스트는
+토큰 인증, 사용자 간 격리, 세션 종료 후 로그인 상태 복원, 작업 디렉터리 제한, 네트워크 정책,
+유휴 종료, SIGTERM 정리까지 확인합니다.
 
 ### 구조
 
 ```
 src/
-  index.ts          CLI 진입점, stdio 서빙, 종료 처리
+  index.ts          CLI 진입점, stdio 또는 HTTP 모드 선택, 종료 처리
   config.ts         플래그/환경 변수 파싱
-  browser.ts        BrowserSession: 지연 실행, 탭, 다이얼로그, 콘솔/네트워크 로그
+  http.ts           HTTP 모드: 토큰 인증, 세션별 브라우저, 유휴 정리, /healthz
+  auth.ts           토큰 파일/환경 변수 파싱과 Bearer 검증
+  policy.ts         네트워크 정책: 차단 스킴, 사설 IP 판정, DNS 확인
+  browser.ts        BrowserSession: 지연 실행, 탭, 다이얼로그, 콘솔/네트워크 로그, 상태 저장, 경로 제한
   snapshot.ts       접근성 스냅샷 + 페이지 설명 포맷
   server.ts         McpServer 생성과 도구 등록
   tools/
@@ -158,7 +242,9 @@ src/
     tabs.ts         tabs / resize / close
 test/
   fixture-server.ts 테스트용 로컬 사이트
-  smoke.test.ts     엔드투엔드 스모크 테스트
+  smoke.test.ts     stdio 엔드투엔드 스모크 테스트
+  http.test.ts      HTTP 모드 테스트 (인증, 격리, 영속성, 정책, 유휴 종료)
+Dockerfile, docker-compose.yml, Caddyfile, .env.example   원격 배포용
 ```
 
 ## 문제 해결
@@ -169,3 +255,7 @@ test/
 - **사내 프록시 환경**: 브라우저는 셸의 `HTTP_PROXY` 환경 변수를 자동으로 따르지 않습니다. 외부 사이트가 열리지 않으면 `--proxy <url>`(또는 `BROWSER_MCP_PROXY`)을 지정하세요.
 - **서버 로그**: 모든 로그는 stderr로만 출력됩니다(stdout은 MCP 프로토콜 채널). Claude Code에서는 `claude mcp list` / 서버 로그로 확인할 수 있습니다.
 - **클라이언트가 종료됐는데 브라우저가 남아 있다면**: 서버는 stdin EOF 또는 SIGTERM을 받으면 브라우저를 닫습니다. 강제 종료(`kill -9`)된 경우에만 남을 수 있습니다.
+- **HTTP 모드에서 `401`**: `Authorization: Bearer <토큰>` 헤더가 없거나 토큰이 틀린 경우입니다. 토큰은 서버의 `BROWSER_MCP_TOKENS`/`--tokens-file`과 같아야 합니다.
+- **HTTP 모드에서 `Session not found`**: 유휴 시간이 지나 세션이 닫혔거나 서버가 재시작된 경우입니다. 클라이언트를 다시 연결하면 새 세션이 열리고 로그인 상태는 복원됩니다.
+- **`Cannot open ...: ... private or reserved address`**: 네트워크 정책이 사설망 접근을 막은 것입니다. 사내망 사이트가 대상이면 `--allow-private-network`를 주세요.
+- **Docker에서 탭이 죽는다면**: `/dev/shm`이 작아서입니다. compose 파일의 `shm_size: 1gb`를 유지하거나 `docker run --shm-size=1g`를 쓰세요.

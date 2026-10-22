@@ -237,22 +237,25 @@ export function registerInteractionTools(tool: ToolRegistrar): void {
       description: 'Set the files of an <input type="file"> element. Pass an empty list to clear the selection.',
       input: {
         ...targetInput,
-        paths: z.array(z.string()).describe('Absolute paths of local files to upload.'),
+        paths: z
+          .array(z.string())
+          .describe('Paths of local files to upload (absolute; on a shared server, relative to the files folder of your workspace).'),
       },
       annotations: ACTION,
     },
     async (args, session) => {
       const page = await session.page();
       session.assertNoDialog(page);
-      for (const file of args.paths) {
+      const files = args.paths.map((file) => session.resolvePath(file, 'files'));
+      for (const file of files) {
         await access(file).catch(() => {
-          throw new UserError(`File not found: ${file}`);
+          throw new UserError(`File not found: ${session.displayPath(file)}`);
         });
       }
-      await session.resolveTarget(page, args).setInputFiles(args.paths);
-      const count = args.paths.length;
+      await session.resolveTarget(page, args).setInputFiles(files);
+      const count = files.length;
       return `Set ${count} file${count === 1 ? '' : 's'} on ${describeTarget(args)}${
-        count ? `: ${args.paths.join(', ')}` : ''
+        count ? `: ${files.map((file) => session.displayPath(file)).join(', ')}` : ''
       }.`;
     },
   );

@@ -1,3 +1,5 @@
+import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
 import * as z from 'zod/v4';
 import { describeTarget, type ConsoleEntry, type NetworkEntry } from '../browser.js';
 import { ACTION, READ_ONLY, clampText, pageResult, targetInput, textResult, type ToolRegistrar } from './common.js';
@@ -89,7 +91,10 @@ export function registerInspectionTools(tool: ToolRegistrar): void {
           .describe('Capture the whole scrollable page instead of the viewport (ignored for element screenshots).'),
         type: z.enum(['png', 'jpeg']).optional().describe('Image format (default png).'),
         quality: z.number().int().min(0).max(100).optional().describe('JPEG quality 0-100 (default 80; jpeg only).'),
-        savePath: z.string().optional().describe('Also write the image to this file path.'),
+        savePath: z
+          .string()
+          .optional()
+          .describe('Also write the image to this file path (on a shared server: relative to your workspace).'),
       },
       annotations: READ_ONLY,
     },
@@ -97,8 +102,10 @@ export function registerInspectionTools(tool: ToolRegistrar): void {
       const page = await session.page();
       session.assertNoDialog(page);
       const targeted = Boolean(args.ref || args.selector);
+      const savePath = args.savePath ? session.resolvePath(args.savePath, 'screenshots') : undefined;
+      if (savePath) await mkdir(path.dirname(savePath), { recursive: true });
       const capture = async (type: 'png' | 'jpeg', quality: number | undefined): Promise<Buffer> => {
-        const options = { type, quality: type === 'jpeg' ? quality : undefined, scale: 'css' as const, path: args.savePath };
+        const options = { type, quality: type === 'jpeg' ? quality : undefined, scale: 'css' as const, path: savePath };
         return targeted
           ? session.resolveTarget(page, args).screenshot(options)
           : page.screenshot({ ...options, fullPage: args.fullPage ?? false });
@@ -116,7 +123,7 @@ export function registerInspectionTools(tool: ToolRegistrar): void {
       const what = targeted ? describeTarget(args) : args.fullPage ? 'the full page' : 'the viewport';
       const text =
         `Screenshot of ${what} (${type}, ${Math.max(1, Math.round(buffer.length / 1024))} KB${sizeNote}` +
-        `${args.savePath ? `, saved to ${args.savePath}` : ''}). Page: ${title || '(no title)'} - ${page.url()}`;
+        `${savePath ? `, saved to ${session.displayPath(savePath)}` : ''}). Page: ${title || '(no title)'} - ${page.url()}`;
       return {
         content: [
           { type: 'image', data: buffer.toString('base64'), mimeType: `image/${type}` },

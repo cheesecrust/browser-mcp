@@ -78,7 +78,21 @@ export function errorResult(error: unknown): ToolResult {
   return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true };
 }
 
-export function createRegistrar(server: McpServer, session: BrowserSession): ToolRegistrar {
+export interface ToolCallInfo {
+  name: string;
+  /** Wall-clock duration in milliseconds. */
+  ms: number;
+  ok: boolean;
+  /** URL of the active tab after the call, when a browser is running. */
+  url?: string | undefined;
+}
+
+export interface RegistrarHooks {
+  /** Called after every tool call, e.g. to write an audit log line. */
+  onToolCall?: (info: ToolCallInfo) => void;
+}
+
+export function createRegistrar(server: McpServer, session: BrowserSession, hooks: RegistrarHooks = {}): ToolRegistrar {
   const mutex = new Mutex();
   return (name, spec, handler) => {
     server.registerTool(
@@ -91,11 +105,19 @@ export function createRegistrar(server: McpServer, session: BrowserSession): Too
       },
       async (args) =>
         mutex.run(async () => {
+          const started = Date.now();
+          let ok = false;
           try {
             const result = await handler(args as Parameters<typeof handler>[0], session);
-            return typeof result === 'string' ? textResult(result) : result;
+            const toolResult = typeof result === 'string' ? textResult(result) : result;
+            ok = toolResult.isError !== true;
+            return toolResult;
           } catch (error) {
             return errorResult(error);
+          } finally {
+            // Logins and other state changes are saved to the user's state file (shared servers).
+            session.schedulePersist();
+            hooks.onToolCall?.({ name, ms: Date.now() - started, ok, url: session.activeUrl() });
           }
         }),
     );

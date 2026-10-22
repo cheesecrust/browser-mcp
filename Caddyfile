@@ -1,0 +1,12 @@
+# HTTPS front for the remote server. Caddy obtains and renews the certificate
+# automatically; DOMAIN comes from .env (docker compose --profile https).
+{$DOMAIN} {
+    reverse_proxy browser-mcp:3000 {
+        # Streamable HTTP keeps SSE streams open; do not buffer or time them out.
+        flush_interval -1
+        transport http {
+            read_timeout 0
+            write_timeout 0
+        }
+    }
+}

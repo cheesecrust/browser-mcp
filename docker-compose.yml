@@ -1,0 +1,42 @@
+# Remote browser-mcp server.
+#
+#   cp .env.example .env            # put user tokens (and DOMAIN for HTTPS) in .env
+#   docker compose up -d --build    # plain HTTP on port 3000, e.g. behind your own reverse proxy
+#   docker compose --profile https up -d --build   # with Caddy terminating HTTPS for $DOMAIN
+#
+services:
+  browser-mcp:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      BROWSER_MCP_HTTP: "1"
+      BROWSER_MCP_HOST: "0.0.0.0"
+      BROWSER_MCP_PORT: "3000"
+      BROWSER_MCP_DATA_DIR: /data
+    volumes:
+      - browser-mcp-data:/data
+    # Chromium keeps shared memory in /dev/shm; the Docker default of 64 MB crashes tabs.
+    shm_size: "1gb"
+    ports:
+      - "${BROWSER_MCP_BIND:-127.0.0.1}:3000:3000"
+
+  caddy:
+    image: caddy:2
+    profiles: ["https"]
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - browser-mcp
+
+volumes:
+  browser-mcp-data:
+  caddy-data:
+  caddy-config:
