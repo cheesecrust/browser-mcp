@@ -1,0 +1,415 @@
+import { mkdir } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { chromium, firefox, webkit } from 'playwright';
+import type {
+  Browser,
+  BrowserContext,
+  BrowserContextOptions,
+  BrowserType,
+  Dialog,
+  Download,
+  LaunchOptions,
+  Locator,
+  Page,
+  Request,
+} from 'playwright';
+import type { BrowserName, Config } from './config.js';
+import { log } from './log.js';
+
+/** An error whose message is written for the AI agent and returned as-is. */
+export class UserError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UserError';
+  }
+}
+
+export interface ConsoleEntry {
+  type: string;
+  text: string;
+  location?: string;
+  timestamp: number;
+}
+
+export interface NetworkEntry {
+  method: string;
+  url: string;
+  resourceType: string;
+  status?: number;
+  failure?: string;
+  timestamp: number;
+}
+
+export interface DownloadEntry {
+  url: string;
+  suggestedFilename: string;
+  savedPath?: string;
+  error?: string;
+  timestamp: number;
+}
+
+export interface ElementTarget {
+  ref?: string | undefined;
+  selector?: string | undefined;
+}
+
+interface PageState {
+  console: ConsoleEntry[];
+  network: NetworkEntry[];
+  dialog?: Dialog;
+  dialogWaiters: Array<(dialog: Dialog) => void>;
+}
+
+const MAX_LOG_ENTRIES = 500;
+const ENGINES: Record<BrowserName, BrowserType> = { chromium, firefox, webkit };
+
+function pushCapped<T>(list: T[], item: T): void {
+  list.push(item);
+  if (list.length > MAX_LOG_ENTRIES) list.splice(0, list.length - MAX_LOG_ENTRIES);
+}
+
+/** Drops `undefined` values so Playwright's option validation only sees real settings. */
+function compact<T extends object>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T;
+}
+
+/** Accepts "e12", "[ref=e12]", "ref=e12" and iframe refs like "f1e3". */
+export function normalizeRef(ref: string | undefined): string | undefined {
+  if (ref === undefined) return undefined;
+  const value = ref.trim().replace(/^\[?ref=/, '').replace(/\]$/, '');
+  if (!value) return undefined;
+  if (!/^(?:f\d+)*e\d+$/.test(value)) {
+    throw new UserError(
+      `"${ref}" is not a valid element ref. Refs look like "e12" or "f3e12" and come from the most recent snapshot.`,
+    );
+  }
+  return value;
+}
+
+/** Adds a scheme when the agent passes a bare host such as "example.com" or "localhost:3000". */
+export function normalizeUrl(input: string): string {
+  const url = input.trim();
+  if (!url) throw new UserError('url must not be empty.');
+  if (/^(https?|file|about|data|blob|chrome|chrome-extension|view-source|devtools):/i.test(url)) return url;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) return url;
+  if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?([/?#]|$)/i.test(url)) return `http://${url}`;
+  if (/^[^/\s]+:\d+([/?#]|$)/.test(url)) return `http://${url}`;
+  return `https://${url}`;
+}
+
+/**
+ * Owns the Playwright browser for the lifetime of the MCP server: lazy launch,
+ * tab bookkeeping, dialog tracking and per-page console/network logs.
+ */
+export class BrowserSession {
+  private browser?: Browser;
+  private context?: BrowserContext;
+  private launching?: Promise<BrowserContext>;
+  private readonly pages = new Map<Page, PageState>();
+  private activePage?: Page;
+  readonly downloads: DownloadEntry[] = [];
+
+  constructor(readonly config: Config) {}
+
+  get running(): boolean {
+    return this.context !== undefined;
+  }
+
+  async ensureContext(): Promise<BrowserContext> {
+    if (this.context) return this.context;
+    this.launching ??= this.launch().finally(() => {
+      this.launching = undefined;
+    });
+    return this.launching;
+  }
+
+  private async launch(): Promise<BrowserContext> {
+    const { config } = this;
+    const engine = ENGINES[config.browser];
+    const launchOptions: LaunchOptions = compact({
+      headless: config.headless,
+      channel: config.channel,
+      executablePath: config.executablePath,
+      proxy: config.proxy ? compact({ server: config.proxy, bypass: config.proxyBypass }) : undefined,
+    });
+    const contextOptions: BrowserContextOptions = compact({
+      viewport: config.viewport,
+      ignoreHTTPSErrors: config.ignoreHttpsErrors,
+      userAgent: config.userAgent,
+      locale: config.locale,
+      acceptDownloads: true,
+    });
+
+    log(
+      `launching ${config.browser}${config.channel ? ` (${config.channel})` : ''} in ${
+        config.headless ? 'headless' : 'headed'
+      } mode`,
+    );
+
+    let context: BrowserContext;
+    if (config.userDataDir) {
+      context = await engine.launchPersistentContext(config.userDataDir, { ...launchOptions, ...contextOptions });
+      this.browser = context.browser() ?? undefined;
+    } else {
+      const browser = await engine.launch(launchOptions);
+      this.browser = browser;
+      context = await browser.newContext(compact({ ...contextOptions, storageState: config.storageState }));
+    }
+
+    context.setDefaultTimeout(config.actionTimeout);
+    context.setDefaultNavigationTimeout(config.navigationTimeout);
+    context.on('page', (page) => this.attachPage(page));
+    context.on('close', () => {
+      if (this.context === context) {
+        log('browser context closed');
+        this.reset();
+      }
+    });
+    for (const page of context.pages()) this.attachPage(page);
+    this.context = context;
+    return context;
+  }
+
+  private reset(): void {
+    this.browser = undefined;
+    this.context = undefined;
+    this.pages.clear();
+    this.activePage = undefined;
+  }
+
+  async close(): Promise<void> {
+    const { context, browser } = this;
+    this.reset();
+    if (context) await context.close().catch(() => undefined);
+    if (browser) await browser.close().catch(() => undefined);
+    if (context || browser) log('browser closed');
+  }
+
+  private attachPage(page: Page): void {
+    if (this.pages.has(page)) return;
+    const state: PageState = { console: [], network: [], dialogWaiters: [] };
+    this.pages.set(page, state);
+    this.activePage ??= page;
+
+    page.on('console', (message) => {
+      const location = message.location();
+      pushCapped(state.console, {
+        type: message.type(),
+        text: message.text(),
+        location: location.url ? `${location.url}:${location.lineNumber + 1}:${location.columnNumber + 1}` : undefined,
+        timestamp: Date.now(),
+      });
+    });
+    page.on('pageerror', (error) => {
+      pushCapped(state.console, { type: 'error', text: `Uncaught ${error.name}: ${error.message}`, timestamp: Date.now() });
+    });
+    page.on('dialog', (dialog) => {
+      state.dialog = dialog;
+      for (const waiter of state.dialogWaiters.splice(0)) waiter(dialog);
+    });
+
+    const entries = new WeakMap<Request, NetworkEntry>();
+    page.on('request', (request) => {
+      const entry: NetworkEntry = {
+        method: request.method(),
+        url: request.url(),
+        resourceType: request.resourceType(),
+        timestamp: Date.now(),
+      };
+      entries.set(request, entry);
+      pushCapped(state.network, entry);
+    });
+    page.on('response', (response) => {
+      const entry = entries.get(response.request());
+      if (entry) entry.status = response.status();
+    });
+    page.on('requestfailed', (request) => {
+      const entry = entries.get(request);
+      if (entry) entry.failure = request.failure()?.errorText ?? 'failed';
+    });
+    page.on('download', (download) => void this.saveDownload(download));
+    page.on('close', () => {
+      this.pages.delete(page);
+      if (this.activePage === page) this.activePage = this.tabs().at(-1);
+    });
+  }
+
+  private async saveDownload(download: Download): Promise<void> {
+    const entry: DownloadEntry = {
+      url: download.url(),
+      suggestedFilename: download.suggestedFilename(),
+      timestamp: Date.now(),
+    };
+    this.downloads.push(entry);
+    try {
+      const dir = this.config.downloadsDir ?? path.join(os.tmpdir(), 'browser-mcp-downloads');
+      await mkdir(dir, { recursive: true });
+      const target = path.join(dir, `${Date.now()}-${path.basename(entry.suggestedFilename) || 'download'}`);
+      await download.saveAs(target);
+      entry.savedPath = target;
+      log(`download saved to ${target}`);
+    } catch (error) {
+      entry.error = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  // ---- tabs -----------------------------------------------------------------
+
+  /** Open tabs in creation order. The index in this list is the tab index exposed to the agent. */
+  tabs(): Page[] {
+    return [...this.pages.keys()].filter((page) => !page.isClosed());
+  }
+
+  tabIndex(page: Page): number {
+    return this.tabs().indexOf(page);
+  }
+
+  /** The active tab, launching the browser and opening a blank tab when needed. */
+  async page(): Promise<Page> {
+    const context = await this.ensureContext();
+    if (!this.activePage || this.activePage.isClosed()) {
+      const page = this.tabs().at(-1) ?? (await context.newPage());
+      this.attachPage(page);
+      this.activePage = page;
+    }
+    return this.activePage;
+  }
+
+  async newTab(url?: string): Promise<Page> {
+    const context = await this.ensureContext();
+    const page = await context.newPage();
+    this.attachPage(page);
+    this.activePage = page;
+    if (url) await page.goto(url);
+    return page;
+  }
+
+  async selectTab(index: number): Promise<Page> {
+    const page = this.tabs()[index];
+    if (!page) throw new UserError(this.noSuchTab(index));
+    this.activePage = page;
+    await page.bringToFront();
+    return page;
+  }
+
+  async closeTab(index?: number): Promise<void> {
+    const page = index === undefined ? await this.page() : this.tabs()[index];
+    if (!page) throw new UserError(this.noSuchTab(index ?? 0));
+    await page.close();
+  }
+
+  private noSuchTab(index: number): string {
+    const count = this.tabs().length;
+    return count === 0
+      ? `No tab with index ${index}: no tabs are open.`
+      : `No tab with index ${index}. Valid indexes are 0 to ${count - 1}.`;
+  }
+
+  // ---- dialogs --------------------------------------------------------------
+
+  dialogFor(page: Page): Dialog | undefined {
+    return this.pages.get(page)?.dialog;
+  }
+
+  /** Human-readable description of the pending dialog on `page`, if any. */
+  dialogNote(page: Page): string | undefined {
+    const dialog = this.dialogFor(page);
+    if (!dialog) return undefined;
+    const defaultValue = dialog.defaultValue();
+    return (
+      `A "${dialog.type()}" dialog is open with message ${JSON.stringify(dialog.message())}` +
+      (defaultValue ? ` (default value ${JSON.stringify(defaultValue)})` : '') +
+      '. Call browser_handle_dialog to accept or dismiss it before doing anything else on this page.'
+    );
+  }
+
+  assertNoDialog(page: Page): void {
+    const note = this.dialogNote(page);
+    if (note) throw new UserError(note);
+  }
+
+  async handleDialog(page: Page, accept: boolean, promptText?: string): Promise<string> {
+    const state = this.pages.get(page);
+    const dialog = state?.dialog;
+    if (!state || !dialog) throw new UserError('No dialog is currently open on the active tab.');
+    state.dialog = undefined;
+    const description = `${dialog.type()} dialog ${JSON.stringify(dialog.message())}`;
+    try {
+      if (accept) await dialog.accept(promptText);
+      else await dialog.dismiss();
+    } catch (error) {
+      throw new UserError(
+        `Could not handle the ${description}; it may already have been closed (${
+          error instanceof Error ? error.message : String(error)
+        }).`,
+      );
+    }
+    return `${accept ? 'Accepted' : 'Dismissed'} the ${description}.`;
+  }
+
+  /**
+   * Awaits `action`, but returns as soon as a dialog opens on `page` instead,
+   * because a page with an open dialog never finishes any other action.
+   */
+  async raceDialog<T>(page: Page, action: Promise<T>): Promise<{ dialog: Dialog } | { value: T }> {
+    const state = this.pages.get(page);
+    if (!state) return { value: await action };
+    if (state.dialog) {
+      action.catch(() => undefined);
+      return { dialog: state.dialog };
+    }
+    let waiter: ((dialog: Dialog) => void) | undefined;
+    const dialogOpened = new Promise<{ dialog: Dialog }>((resolve) => {
+      waiter = (dialog) => resolve({ dialog });
+      state.dialogWaiters.push(waiter);
+    });
+    try {
+      return await Promise.race([action.then((value) => ({ value })), dialogOpened]);
+    } finally {
+      if (waiter) {
+        const index = state.dialogWaiters.indexOf(waiter);
+        if (index >= 0) state.dialogWaiters.splice(index, 1);
+      }
+      // If the dialog won the race the action is abandoned; swallow its eventual rejection.
+      action.catch(() => undefined);
+    }
+  }
+
+  // ---- logs -----------------------------------------------------------------
+
+  consoleEntries(page: Page): ConsoleEntry[] {
+    return this.pages.get(page)?.console ?? [];
+  }
+
+  clearConsole(page: Page): void {
+    const state = this.pages.get(page);
+    if (state) state.console = [];
+  }
+
+  networkEntries(page: Page): NetworkEntry[] {
+    return this.pages.get(page)?.network ?? [];
+  }
+
+  clearNetwork(page: Page): void {
+    const state = this.pages.get(page);
+    if (state) state.network = [];
+  }
+
+  // ---- element targeting ----------------------------------------------------
+
+  /** Resolves an agent-supplied target (snapshot ref or Playwright selector) to a locator. */
+  resolveTarget(page: Page, target: ElementTarget): Locator {
+    const ref = normalizeRef(target.ref);
+    if (ref) return page.getByRef(ref);
+    const selector = target.selector?.trim();
+    if (selector) return page.locator(selector);
+    throw new UserError('Provide either "ref" (an element ref from the most recent snapshot) or "selector".');
+  }
+}
+
+export function describeTarget(target: ElementTarget): string {
+  const ref = normalizeRef(target.ref);
+  if (ref) return `element ${ref}`;
+  return `element matching ${JSON.stringify(target.selector?.trim() ?? '')}`;
+}
