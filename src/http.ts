@@ -280,6 +280,7 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
         allowedUsers: config.allowedUsers,
         accessTokenTtlMs: config.accessTokenTtlMs,
         refreshTokenTtlMs: 30 * 24 * 60 * 60 * 1_000,
+        clients: config.oauthClients,
       })
     : undefined;
   const unauthenticated = tokens.size === 0 && !oauth;
@@ -498,7 +499,7 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
         return true;
       case '/token':
         if (method !== 'POST') break;
-        sendOutcome(res, oauth.token(asForm(await readBody(req))));
+        sendOutcome(res, oauth.token(asForm(await readBody(req)), req.headers.authorization));
         return true;
       case '/revoke':
         if (method !== 'POST') break;

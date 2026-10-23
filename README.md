@@ -231,10 +231,27 @@ ChatGPT 웹과 Claude.ai의 커스텀 커넥터는 OAuth 서버를 요구하므�
 등록 순서:
 
 1. [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector)로 `https://<호스트>/mcp/lite`에 연결해 카카오 로그인과 툴 목록을 미리 확인합니다(가이드가 요구하는 사전 점검).
-2. PlayMCP 개발자 콘솔에서 **새로운 MCP 서버 등록**: 식별자(영문·숫자만, `kakao` 포함 불가), 엔드포인트 URL `https://<호스트>/mcp/lite`, 인증 방식 OAuth를 고르고 **정보 불러오기**로 툴 14개가 보이는지 확인한 뒤 **임시 등록**합니다.
-3. PlayMCP가 메일로 보내주는 **Redirect URI**는 24시간 안에 등록해야 합니다. 이 서버는 동적 클라이언트 등록(RFC 7591)과 CIMD를 지원하므로 PlayMCP가 그 방식을 쓰면 추가 설정이 없습니다. 고정 client_id/secret을 요구하는 방식은 아직 지원하지 않습니다.
-4. **도구함에 추가**해 AI 채팅에서 테스트한 뒤 **등록 및 심사 요청**을 보내고, 승인되면 공개 상태를 **전체 공개**로 바꿉니다.
-5. 툴 이름이나 설명을 바꾸면 콘솔의 **정보 불러오기**를 다시 눌러 재심사를 받아야 PlayMCP 화면에 반영됩니다.
+2. PlayMCP는 OAuth 클라이언트 ID와 비밀값을 미리 받는 방식이므로 서버 `.env`에 클라이언트를 적어 두고 재시작합니다. 비밀값은 `openssl rand -hex 32`처럼 임의로 만듭니다. Redirect URI는 아직 모르니 비워 둡니다.
+   ```
+   BROWSER_MCP_OAUTH_CLIENTS=playmcp:<비밀값>
+   ```
+3. PlayMCP 개발자 콘솔에서 **새로운 MCP 서버 등록**: 식별자(영문·숫자만, `kakao` 포함 불가), 엔드포인트 URL `https://<호스트>/mcp/lite`를 넣고 **정보 불러오기**로 툴 14개가 보이는지 확인합니다. 인증 방식은 OAuth를 고르고 아래처럼 채운 뒤 **임시 등록**합니다.
+
+   | 항목 | 값 |
+   |---|---|
+   | Client ID | `playmcp` (`.env`에 적은 id) |
+   | Client Secret | `.env`에 적은 비밀값 |
+   | Authorization Endpoint URL | `https://<호스트>/authorize` |
+   | Token Endpoint URL | `https://<호스트>/token` |
+   | Scope | `browser` |
+   | Grant Type | Authorization Code |
+
+4. 등록 후 PlayMCP가 메일로 보내주는 **Redirect URI**를 24시간 안에 `.env`에 추가하고 재시작합니다(`docker compose --profile https up -d`). 여러 개면 `|`로 잇고, 정확한 주소를 모르면 `https://playmcp.kakao.com/*`처럼 `*`로 끝나는 접두어도 됩니다. 이 클라이언트는 비밀값으로 자신을 증명하므로 PKCE 없이도 로그인할 수 있고, 토큰 요청은 `client_secret_post`와 `client_secret_basic` 둘 다 받습니다.
+   ```
+   BROWSER_MCP_OAUTH_CLIENTS=playmcp:<비밀값>:https://playmcp.kakao.com/<메일에 적힌 경로>
+   ```
+5. **도구함에 추가**해 AI 채팅에서 테스트한 뒤 **등록 및 심사 요청**을 보내고, 승인되면 공개 상태를 **전체 공개**로 바꿉니다.
+6. 툴 이름이나 설명을 바꾸면 콘솔의 **정보 불러오기**를 다시 눌러 재심사를 받아야 PlayMCP 화면에 반영됩니다.
 
 ### 동작과 제한
 
@@ -276,6 +293,7 @@ ChatGPT 웹과 Claude.ai의 커스텀 커넥터는 OAuth 서버를 요구하므�
 | `--idle-timeout <sec>` | `BROWSER_MCP_IDLE_TIMEOUT` | `900` | 유휴 세션 종료 시간 |
 | `--max-sessions <n>` | `BROWSER_MCP_MAX_SESSIONS` | `20` | 동시에 뜨는 브라우저 수(사용자당 하나) |
 | `--max-sessions-per-user <n>` | `BROWSER_MCP_MAX_SESSIONS_PER_USER` | `10` | 사용자당 MCP 세션 수. 넘으면 가장 오래 쉰 세션이 닫힘 |
+| `--oauth-clients <spec>` | `BROWSER_MCP_OAUTH_CLIENTS` | | 미리 등록하는 OAuth 클라이언트 `id:secret[:redirect_uri\|...]`, 여러 개는 `;`로 구분 (PlayMCP용) |
 | `--allow-private-network` | `BROWSER_MCP_ALLOW_PRIVATE_NETWORK` | stdio: on / http: off | 로컬 파일과 사설망 접근 허용 |
 | `--public-url <url>` | `BROWSER_MCP_PUBLIC_URL` | | 클라이언트가 보는 서버 주소 (카카오 로그인에 필수) |
 | `--kakao-client-id <key>` | `BROWSER_MCP_KAKAO_CLIENT_ID` | | 카카오 앱의 REST API 키. 지정하면 카카오 로그인 활성화 |

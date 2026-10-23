@@ -23,6 +23,7 @@ KAKAO_CLIENT_SECRET=""                  # Kakao Developers > app > platform keys
 ALLOWED_USERS=""                        # Kakao user ids and/or e-mails, comma separated; "*" allows everyone
 KAKAO_SCOPE=""                          # e.g. "account_email" when allowing users by e-mail
 STATIC_TOKENS=""                        # optional "token:user,token2:user2" (16+ character random tokens)
+OAUTH_CLIENTS=""                        # optional pre-registered OAuth clients for PlayMCP: "id:secret[:redirect_uri]"
 REPO_URL="https://github.com/cheesecrust/browser-mcp.git"
 BRANCH="main"
 AUTO_UPDATE="true"                      # hourly: pull the branch and rebuild when it moved
@@ -87,6 +88,7 @@ main() {
         [ -n "$ALLOWED_USERS" ] && echo "BROWSER_MCP_ALLOWED_USERS=$ALLOWED_USERS"
         [ -n "$KAKAO_SCOPE" ] && echo "BROWSER_MCP_KAKAO_SCOPE=$KAKAO_SCOPE"
         [ -n "$STATIC_TOKENS" ] && echo "BROWSER_MCP_TOKENS=$STATIC_TOKENS"
+        [ -n "$OAUTH_CLIENTS" ] && echo "BROWSER_MCP_OAUTH_CLIENTS=$OAUTH_CLIENTS"
         true
       } > "$APP_DIR/.env"
     )

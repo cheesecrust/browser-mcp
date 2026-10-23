@@ -4,6 +4,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { loadTokens, type TokenEntry } from './auth.js';
 import { ConfigError } from './errors.js';
+import { parseStaticClients, type StaticClient } from './oauth.js';
 
 export { ConfigError } from './errors.js';
 
@@ -66,6 +67,8 @@ export interface Config {
   kakaoClientSecret?: string;
   /** Comma-separated Kakao consent items to request, e.g. "account_email". */
   kakaoScope?: string;
+  /** Pre-registered confidential OAuth clients, for services such as PlayMCP that ask for a client id and secret. */
+  oauthClients: StaticClient[];
   /** Kakao user ids and/or e-mail addresses that may use the server; "*" allows every Kakao account. */
   allowedUsers: string[];
   /** Lifetime of access tokens issued after Kakao login, in milliseconds. */
@@ -135,6 +138,7 @@ Kakao Login (clients authenticate with a Kakao account instead of static tokens)
   --kakao-client-secret <s>  Client secret of the Kakao app (prefer BROWSER_MCP_KAKAO_CLIENT_SECRET)
   --kakao-scope <scopes>     Consent items to request, comma separated, e.g. account_email
   --allowed-users <list>     Kakao user ids and/or e-mails allowed to log in, comma separated; "*" allows everyone
+  --oauth-clients <spec>     Pre-registered OAuth clients "id:secret[:redirect_uri|...]" separated by ";" (PlayMCP and similar)
   --access-token-ttl <sec>   Lifetime of issued access tokens (default: ${DEFAULTS.accessTokenTtlSeconds})
 
   -h, --help                 Show this help
@@ -228,6 +232,7 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
         'kakao-client-secret': { type: 'string' },
         'kakao-scope': { type: 'string' },
         'allowed-users': { type: 'string' },
+        'oauth-clients': { type: 'string' },
         'access-token-ttl': { type: 'string' },
       },
     }).values;
@@ -305,6 +310,7 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
     kakaoClientId: str('kakao-client-id', 'KAKAO_CLIENT_ID'),
     kakaoClientSecret: str('kakao-client-secret', 'KAKAO_CLIENT_SECRET'),
     kakaoScope: str('kakao-scope', 'KAKAO_SCOPE'),
+    oauthClients: parseStaticClients(str('oauth-clients', 'OAUTH_CLIENTS') ?? ''),
     allowedUsers: allowedUsersRaw
       ? allowedUsersRaw
           .split(',')
@@ -359,8 +365,8 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
       if (parsed.search || parsed.hash || (parsed.pathname !== '/' && parsed.pathname !== '')) {
         throw new ConfigError('--public-url must be the origin only, without a path (e.g. https://browser.example.com)');
       }
-    } else if (config.kakaoClientSecret || config.kakaoScope || config.allowedUsers.length > 0) {
-      throw new ConfigError('--kakao-client-secret, --kakao-scope and --allowed-users require --kakao-client-id');
+    } else if (config.kakaoClientSecret || config.kakaoScope || config.allowedUsers.length > 0 || config.oauthClients.length > 0) {
+      throw new ConfigError('--kakao-client-secret, --kakao-scope, --allowed-users and --oauth-clients require --kakao-client-id');
     }
   } else if (config.allowUnauthenticated || config.tokens.length > 0 || config.kakaoClientId) {
     throw new ConfigError('--allow-unauthenticated, tokens and Kakao login only apply to --http mode');

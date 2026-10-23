@@ -29,6 +29,7 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const KAKAO_CLIENT_ID = 'test-rest-api-key';
 const KAKAO_CLIENT_SECRET = 'test-client-secret';
 const STATIC_TOKEN = 'static-token-0123456789abcdef';
+const PLAYMCP_SECRET = 'playmcp-secret-0123456789abcdef';
 
 interface KakaoUser {
   id: number;
@@ -365,6 +366,7 @@ async function main(): Promise<void> {
     '--kakao-client-id', KAKAO_CLIENT_ID,
     '--kakao-scope', 'account_email',
     '--allowed-users', '1001, bob@example.com',
+    '--oauth-clients', `playmcp:${PLAYMCP_SECRET}:${callback.url}`,
     '--allow-private-network',
     '--data-dir', dataDir,
   ];
@@ -442,6 +444,47 @@ async function main(): Promise<void> {
     assert.equal(liteTabs.isError, undefined, 'tool calls work after the login');
     await liteClient.close();
     await liteProbe.close().catch(() => undefined);
+
+    step('a pre-registered confidential client (PlayMCP style) logs in without PKCE and proves itself with its secret');
+    kakao.setUser({ id: 1001, nickname: 'Alice' });
+    const playState = 'play-state-123';
+    const playAuthorize = new URL(`${publicUrl}/authorize`);
+    playAuthorize.searchParams.set('response_type', 'code');
+    playAuthorize.searchParams.set('client_id', 'playmcp');
+    playAuthorize.searchParams.set('redirect_uri', callback.url);
+    playAuthorize.searchParams.set('scope', 'browser');
+    playAuthorize.searchParams.set('state', playState);
+    const playPage = await browse(playAuthorize.toString());
+    assert.equal(playPage.status, 200, playPage.body);
+    const playParams = await callback.next();
+    assert.equal(playParams.get('error'), null, playParams.toString());
+    assert.equal(playParams.get('state'), playState);
+    const playCode = playParams.get('code')!;
+    const wrongSecret = await postForm(`${publicUrl}/token`, {
+      grant_type: 'authorization_code', code: playCode, redirect_uri: callback.url, client_id: 'playmcp', client_secret: 'not-the-secret-0123456789',
+    });
+    assert.equal(wrongSecret.status, 401);
+    assert.equal(wrongSecret.body.error, 'invalid_client');
+    const playTokens = await postForm(`${publicUrl}/token`, {
+      grant_type: 'authorization_code', code: playCode, redirect_uri: callback.url, client_id: 'playmcp', client_secret: PLAYMCP_SECRET,
+    });
+    assert.equal(playTokens.status, 200, JSON.stringify(playTokens.body));
+    assert.equal((await rawInitialize(`${mcpUrl}/lite`, playTokens.body.access_token as string)).status, 200);
+    const basic = Buffer.from(`playmcp:${PLAYMCP_SECRET}`).toString('base64');
+    const refreshedResponse = await fetch(`${publicUrl}/token`, {
+      method: 'POST',
+      headers: { authorization: `Basic ${basic}` },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: playTokens.body.refresh_token as string }),
+    });
+    assert.equal(refreshedResponse.status, 200);
+    const refreshedTokens = (await refreshedResponse.json()) as Record<string, string>;
+    assert.ok(refreshedTokens.access_token, 'HTTP Basic client authentication works for refresh');
+    const refreshWithoutSecret = await postForm(`${publicUrl}/token`, {
+      grant_type: 'refresh_token', refresh_token: refreshedTokens.refresh_token!, client_id: 'playmcp',
+    });
+    assert.equal(refreshWithoutSecret.status, 401);
+    const metadataAfter = (await (await fetch(`${publicUrl}/.well-known/oauth-authorization-server`)).json()) as Record<string, unknown>;
+    assert.deepEqual(metadataAfter.token_endpoint_auth_methods_supported, ['none', 'client_secret_post', 'client_secret_basic']);
 
     step('a Kakao account outside the allow list is refused with its id in the error');
     kakao.setUser({ id: 2002, nickname: 'Mallory', email: 'mallory@example.com' });
