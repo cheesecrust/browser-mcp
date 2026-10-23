@@ -170,6 +170,15 @@ docker compose --profile https up -d --build   # Caddy가 $DOMAIN 의 인증서�
 5. 몇 분 뒤 `https://<도메인>/healthz`가 `{"ok":true,...}`를 돌려주면 완료입니다.
 
 진행 상황은 `/var/log/browser-mcp-setup.log`에 남고, 콘솔의 브라우저 SSH에서 `docker compose -f /opt/browser-mcp/docker-compose.yml logs -f`로 서버 로그를 볼 수 있습니다.
+Lightsail은 시작 스크립트를 자기 래퍼 안에서 `/bin/sh`로 실행하므로 이 스크립트는 bash 전용 문법 없이 POSIX sh로 유지합니다.
+
+시작 스크립트를 붙여 넣지 못했거나 실행되지 않았다면(`/var/log/browser-mcp-setup.log`가 없음), 브라우저 SSH에서 직접 받아 실행해도 결과는 같습니다:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cheesecrust/browser-mcp/main/deploy/lightsail-launch.sh -o setup.sh
+nano setup.sh            # 위쪽 설정값 채우기
+sudo sh setup.sh
+```
 `AUTO_UPDATE="true"`(기본)면 매시간 `deploy/update.sh`가 브랜치가 바뀌었을 때만 받아서 다시 빌드하므로, 코드 수정은 GitHub에 push하는 것으로 끝납니다.
 
 ### 클라이언트 등록
@@ -323,4 +332,5 @@ deploy/
 - **카카오 로그인 창에서 `KOE006`(Redirect URI 불일치)**: Kakao Developers에 등록한 Redirect URI가 `<public-url>/oauth/kakao/callback`과 정확히 같은지 확인하세요.
 - **HTTP 모드에서 `Session not found`**: 유휴 시간이 지나 세션이 닫혔거나 서버가 재시작된 경우입니다. 클라이언트를 다시 연결하면 새 세션이 열리고 로그인 상태는 복원됩니다.
 - **`Cannot open ...: ... private or reserved address`**: 네트워크 정책이 사설망 접근을 막은 것입니다. 사내망 사이트가 대상이면 `--allow-private-network`를 주세요.
+- **Lightsail에서 `/var/log/browser-mcp-setup.log`가 없다면**: 시작 스크립트가 실행되지 않은 것입니다. `sudo tail /var/log/cloud-init-output.log`로 원인을 보고, 위의 "직접 받아 실행" 방법으로 설치하세요.
 - **Docker에서 탭이 죽는다면**: `/dev/shm`이 작아서입니다. compose 파일의 `shm_size: 1gb`를 유지하거나 `docker run --shm-size=1g`를 쓰세요.
