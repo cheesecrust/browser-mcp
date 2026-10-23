@@ -90,6 +90,18 @@ echo "== building and starting (first build downloads the Playwright image, a fe
 cd "$APP_DIR"
 docker compose --profile https up -d --build
 
+echo "== waiting for the server to report healthy"
+for _ in $(seq 1 30); do
+  if health="$(curl -fs --noproxy '*' http://127.0.0.1:3000/healthz 2> /dev/null)"; then
+    echo "== server healthy: $health"
+    break
+  fi
+  sleep 2
+done
+if [ -z "${health:-}" ]; then
+  echo "WARNING: the server did not answer on port 3000 within 60 seconds; check: docker compose -f $APP_DIR/docker-compose.yml logs browser-mcp"
+fi
+
 if [ "$AUTO_UPDATE" = "true" ]; then
   chmod +x "$APP_DIR/deploy/update.sh"
   cat > /etc/cron.d/browser-mcp-update <<EOF
