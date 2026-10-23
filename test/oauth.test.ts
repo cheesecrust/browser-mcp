@@ -419,10 +419,29 @@ async function main(): Promise<void> {
     const liteChallenge = await fetch(`${mcpUrl}/lite`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
     assert.equal(liteChallenge.status, 401);
     assert.match(liteChallenge.headers.get('www-authenticate') ?? '', /oauth-protected-resource\/mcp\/lite"/);
+    // Discovery is open on /mcp/lite, so the handshake succeeds without a login...
     const aliceLite = new TestProvider(callback.url);
-    const { client: liteClient } = await loginWithSdk(`${mcpUrl}/lite`, aliceLite, callback);
-    assert.equal((await liteClient.listTools()).tools.length, 14);
+    const liteTransport = new StreamableHTTPClientTransport(new URL(`${mcpUrl}/lite`), { authProvider: aliceLite });
+    const liteProbe = new Client({ name: 'browser-mcp-oauth-test', version: '0.0.0' });
+    await liteProbe.connect(liteTransport);
+    assert.equal((await liteProbe.listTools()).tools.length, 14);
+    // ...and the first tool call is what sends the client through Kakao Login.
+    await assert.rejects(
+      liteProbe.callTool({ name: 'browser_tabs', arguments: { action: 'list' } }),
+      (error) => UnauthorizedError.isInstance(error) || /unauthorized/i.test(String(error)),
+    );
+    assert.ok(aliceLite.authUrl, 'the 401 on the tool call sent the client to the authorization endpoint');
+    const litePage = await browse(aliceLite.authUrl.toString());
+    assert.equal(litePage.status, 200, litePage.body);
+    const liteParams = await callback.next();
+    assert.equal(liteParams.get('error'), null, liteParams.toString());
+    await liteTransport.finishAuth(liteParams.get('code')!);
+    const liteClient = new Client({ name: 'browser-mcp-oauth-test', version: '0.0.0' });
+    await liteClient.connect(new StreamableHTTPClientTransport(new URL(`${mcpUrl}/lite`), { authProvider: aliceLite }));
+    const liteTabs = (await liteClient.callTool({ name: 'browser_tabs', arguments: { action: 'list' } })) as { isError?: boolean };
+    assert.equal(liteTabs.isError, undefined, 'tool calls work after the login');
     await liteClient.close();
+    await liteProbe.close().catch(() => undefined);
 
     step('a Kakao account outside the allow list is refused with its id in the error');
     kakao.setUser({ id: 2002, nickname: 'Mallory', email: 'mallory@example.com' });

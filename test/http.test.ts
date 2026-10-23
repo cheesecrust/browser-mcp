@@ -208,6 +208,26 @@ async function main(): Promise<void> {
     await lite.transport.terminateSession();
     await waitFor(async () => (await health(a.url)).sessions === 2, 10_000, 'lite session to close');
 
+    step('/mcp/lite answers tool discovery without a token, in plain JSON, but refuses tool calls');
+    const rpc = (method: string, params?: unknown): string => JSON.stringify({ jsonrpc: '2.0', id: 1, method, params });
+    const anonymousPost = (url: string, payload: string): Promise<Response> =>
+      fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: payload });
+    const anonList = await anonymousPost(`${a.url}/lite`, rpc('tools/list'));
+    assert.equal(anonList.status, 200);
+    assert.match(anonList.headers.get('content-type') ?? '', /application\/json/);
+    const anonTools = (await anonList.json()) as { result?: { tools?: Array<{ name: string }> } };
+    assert.equal(anonTools.result?.tools?.length, 14);
+    const anonInit = await anonymousPost(
+      `${a.url}/lite`,
+      rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'anonymous', version: '0' } }),
+    );
+    assert.equal(anonInit.status, 200);
+    assert.equal(anonInit.headers.get('mcp-session-id'), null, 'discovery opens no session');
+    const anonCall = await anonymousPost(`${a.url}/lite`, rpc('tools/call', { name: 'browser_tabs', arguments: { action: 'list' } }));
+    assert.equal(anonCall.status, 401);
+    assert.equal((await anonymousPost(a.url, rpc('tools/list'))).status, 401, 'the full endpoint still needs a token');
+    assert.equal((await health(a.url)).browsers, 2, 'discovery launched no browser');
+
     step('a session cannot be used with another user\'s token');
     const stolen = await fetch(a.url, {
       method: 'POST',

@@ -31,6 +31,8 @@ const PROFILES: Readonly<Record<string, ToolProfile>> = { '/mcp': 'full', '/mcp/
 const PROTECTED_RESOURCE_PREFIX = '/.well-known/oauth-protected-resource';
 const MAX_FORM_BYTES = 64 * 1024;
 const MAX_MCP_BYTES = 4 * 1024 * 1024;
+/** JSON-RPC methods that reveal nothing but the tool catalogue; /mcp/lite answers them without a token. */
+const DISCOVERY_METHODS: ReadonlySet<string> = new Set(['initialize', 'notifications/initialized', 'ping', 'tools/list']);
 const short = (id: string): string => id.slice(0, 8);
 
 interface UserEntry {
@@ -206,9 +208,46 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return text.trim() ? (JSON.parse(text) as unknown) : {};
 }
 
-function isInitialize(body: unknown): boolean {
+function methodsOf(body: unknown): string[] {
   const messages = Array.isArray(body) ? body : [body];
-  return messages.some((message) => Boolean(message) && typeof message === 'object' && (message as { method?: unknown }).method === 'initialize');
+  return messages
+    .map((message) => (message && typeof message === 'object' ? (message as { method?: unknown }).method : undefined))
+    .filter((method): method is string => typeof method === 'string');
+}
+
+function isInitialize(body: unknown): boolean {
+  return methodsOf(body).includes('initialize');
+}
+
+function isDiscoveryOnly(body: unknown): boolean {
+  const methods = methodsOf(body);
+  return methods.length > 0 && methods.every((method) => DISCOVERY_METHODS.has(method));
+}
+
+/**
+ * The SDK transport insists on `Accept: application/json, text/event-stream`. Simple
+ * gateways send only application/json (or nothing), so fix the header up for them and
+ * answer with plain JSON instead of an event stream. Returns true for JSON mode.
+ */
+function negotiateJson(req: IncomingMessage): boolean {
+  const accept = req.headers.accept ?? '';
+  const wantsStream = accept.includes('text/event-stream');
+  if (!wantsStream || !accept.includes('application/json')) setHeader(req, 'accept', 'application/json, text/event-stream');
+  return !wantsStream;
+}
+
+/** Rewrites a request header in both views Node offers; the transport builds its Request from rawHeaders. */
+function setHeader(req: IncomingMessage, name: string, value: string): void {
+  req.headers[name] = value;
+  const raw = req.rawHeaders;
+  let found = false;
+  for (let i = 0; i + 1 < raw.length; i += 2) {
+    if (raw[i]!.toLowerCase() === name) {
+      raw[i + 1] = value;
+      found = true;
+    }
+  }
+  if (!found) raw.push(name, value);
 }
 
 function asForm(body: URLSearchParams | unknown): URLSearchParams {
@@ -356,6 +395,7 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
     };
     const transport = new NodeStreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
+      enableJsonResponse: negotiateJson(req),
       onsessioninitialized: (id) => {
         entry.id = id;
         registry.addSession(entry);
@@ -391,11 +431,24 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
       serverFull(res);
       return;
     }
-    const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: negotiateJson(req) });
     const mcp = createServer(user.browser, { remote: true, profile, onToolCall: toolCallLogger(user, () => 'none') });
     await mcp.connect(transport);
     res.once('close', () => void transport.close().catch(() => undefined));
     withAuth(req, authInfo);
+    await transport.handleRequest(req, res, body);
+  }
+
+  /**
+   * The tool catalogue for callers without any token: PlayMCP's console reads it when a
+   * server is registered, before anyone has logged in. No tool runs here, so the
+   * browser session is never launched.
+   */
+  async function serveDiscovery(profile: ToolProfile, req: IncomingMessage, res: ServerResponse, body: unknown): Promise<void> {
+    const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: negotiateJson(req) });
+    const mcp = createServer(new BrowserSession(config, { guard }), { remote: true, profile });
+    await mcp.connect(transport);
+    res.once('close', () => void transport.close().catch(() => undefined));
     await transport.handleRequest(req, res, body);
   }
 
@@ -477,14 +530,6 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
     }
     if (unauthenticated && (!validateHost(req, res) || !validateOrigin(req, res))) return;
 
-    const principal = authenticate(req.headers.authorization);
-    if (!principal) {
-      challenge(res, Boolean(req.headers.authorization), pathname);
-      return;
-    }
-    const { user } = principal;
-    const authInfo: AuthInfo = { token: 'opaque', clientId: user, scopes: ['browser'], extra: { user, display: principal.display } };
-
     let body: unknown;
     if (req.method === 'POST') {
       try {
@@ -494,9 +539,21 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
         return;
       }
     }
-
     const header = req.headers['mcp-session-id'];
     const sessionId = Array.isArray(header) ? header[0] : header;
+
+    const principal = authenticate(req.headers.authorization);
+    if (!principal) {
+      if (profile === 'lite' && !req.headers.authorization && req.method === 'POST' && !sessionId && isDiscoveryOnly(body)) {
+        await serveDiscovery(profile, req, res, body);
+        return;
+      }
+      challenge(res, Boolean(req.headers.authorization), pathname);
+      return;
+    }
+    const { user } = principal;
+    const authInfo: AuthInfo = { token: 'opaque', clientId: user, scopes: ['browser'], extra: { user, display: principal.display } };
+
     if (sessionId) {
       const entry = registry.session(sessionId);
       if (!entry || entry.user !== user) {
@@ -507,6 +564,7 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
       entry.lastActivity = now;
       const owner = registry.user(user);
       if (owner) owner.lastActivity = now;
+      negotiateJson(req);
       withAuth(req, authInfo);
       await entry.transport.handleRequest(req, res, body);
       return;
