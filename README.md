@@ -158,6 +158,20 @@ docker compose --profile https up -d --build   # Caddy가 $DOMAIN 의 인증서�
 이미지는 Playwright 공식 이미지(Chromium과 의존성 포함, 비root 사용자) 위에 만들어지고,
 사용자 데이터는 `/data` 볼륨에 남습니다. Chromium이 `/dev/shm`을 쓰므로 compose 파일이 `shm_size`를 1 GB로 잡습니다.
 
+### Lightsail / EC2에 SSH 없이 올리기
+
+`deploy/lightsail-launch.sh`를 인스턴스 생성 화면의 **시작 스크립트**(Lightsail) 또는 **사용자 데이터**(EC2)에 붙여 넣으면,
+첫 부팅 때 Docker 설치, 저장소 복제, `.env` 작성, HTTPS 포함 실행까지 혼자 끝냅니다. 노트북에서 SSH를 열 일이 없습니다.
+
+1. 스크립트 위쪽의 설정값을 채웁니다: `DOMAIN`, `KAKAO_CLIENT_ID`, `KAKAO_CLIENT_SECRET`, `ALLOWED_USERS` (고정 토큰만 쓰면 `STATIC_TOKENS`).
+2. Ubuntu 24.04, 4 GB 이상 플랜으로 인스턴스를 만들면서 스크립트를 붙여 넣습니다. 2 GB 플랜이면 스크립트가 스왑을 추가합니다.
+3. 고정 IP를 붙이고 도메인의 A 레코드를 그 IP로 설정합니다. 방화벽은 80, 443만 엽니다(SSH 규칙은 지우거나 Lightsail 브라우저 클라이언트로만 제한).
+4. Kakao Developers의 Redirect URI에 `https://<도메인>/oauth/kakao/callback`을 등록합니다.
+5. 몇 분 뒤 `https://<도메인>/healthz`가 `{"ok":true,...}`를 돌려주면 완료입니다.
+
+진행 상황은 `/var/log/browser-mcp-setup.log`에 남고, 콘솔의 브라우저 SSH에서 `docker compose -f /opt/browser-mcp/docker-compose.yml logs -f`로 서버 로그를 볼 수 있습니다.
+`AUTO_UPDATE="true"`(기본)면 매시간 `deploy/update.sh`가 브랜치가 바뀌었을 때만 받아서 다시 빌드하므로, 코드 수정은 GitHub에 push하는 것으로 끝납니다.
+
 ### 클라이언트 등록
 
 카카오 로그인을 쓰는 서버는 주소만 등록하면 됩니다. 첫 연결 때 클라이언트가 브라우저로 카카오 로그인 창을 열고, 이후에는 토큰을 알아서 갱신합니다.
@@ -291,6 +305,9 @@ test/
   http.test.ts      HTTP 모드 테스트 (인증, 격리, 영속성, 정책, 유휴 종료)
   oauth.test.ts     카카오 로그인 테스트 (가짜 카카오 서버로 SDK 클라이언트의 OAuth 흐름 검증)
 Dockerfile, docker-compose.yml, Caddyfile, .env.example   원격 배포용
+deploy/
+  lightsail-launch.sh  Lightsail/EC2 시작 스크립트 (SSH 없이 설치·실행)
+  update.sh            브랜치가 바뀌었을 때 다시 빌드 (cron)
 ```
 
 ## 문제 해결
