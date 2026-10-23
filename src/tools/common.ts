@@ -24,17 +24,6 @@ export type ToolRegistrar = <Shape extends z.ZodRawShape>(
   handler: ToolHandler<Shape>,
 ) => void;
 
-/** Tools run one at a time: Playwright actions on a shared page must not interleave. */
-class Mutex {
-  private tail: Promise<unknown> = Promise.resolve();
-
-  run<T>(task: () => Promise<T>): Promise<T> {
-    const result = this.tail.then(task, task);
-    this.tail = result.catch(() => undefined);
-    return result;
-  }
-}
-
 export const READ_ONLY: ToolAnnotations = {
   readOnlyHint: true,
   destructiveHint: false,
@@ -93,7 +82,6 @@ export interface RegistrarHooks {
 }
 
 export function createRegistrar(server: McpServer, session: BrowserSession, hooks: RegistrarHooks = {}): ToolRegistrar {
-  const mutex = new Mutex();
   return (name, spec, handler) => {
     server.registerTool(
       name,
@@ -101,10 +89,12 @@ export function createRegistrar(server: McpServer, session: BrowserSession, hook
         title: spec.title,
         description: spec.description,
         inputSchema: z.object(spec.input),
-        annotations: spec.annotations,
+        // Directories such as PlayMCP expect the title inside annotations as well.
+        annotations: { title: spec.title, ...spec.annotations },
       },
       async (args) =>
-        mutex.run(async () => {
+        // One call at a time per browser, even when several sessions share it.
+        session.mutex.run(async () => {
           const started = Date.now();
           let ok = false;
           try {

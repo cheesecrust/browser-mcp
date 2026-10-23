@@ -115,11 +115,10 @@ const SCOPE = 'browser';
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
 const token = (prefix: string): string => `${prefix}${randomBytes(32).toString('base64url')}`;
 
-function sameResource(a: string | undefined, b: string): boolean {
-  if (!a) return true;
-  const strip = (value: string): string => value.replace(/#.*$/, '').replace(/\/$/, '');
-  return strip(a) === strip(b);
-}
+/** Paths under the public URL that serve MCP and therefore act as protected resources. */
+export const RESOURCE_PATHS: readonly string[] = ['/mcp', '/mcp/lite'];
+
+const stripResource = (value: string): string => value.replace(/#.*$/, '').replace(/\/$/, '');
 
 /** Redirect URIs a public client may register: HTTPS, loopback HTTP, or a custom app scheme. */
 export function isAcceptableRedirectUri(value: string): boolean {
@@ -182,16 +181,32 @@ export class OAuthServer {
     return this.options.publicUrl;
   }
 
+  /** The default protected resource (the full tool set). */
   get resource(): string {
-    return `${this.options.publicUrl}/mcp`;
+    return this.resourceUrl('/mcp');
+  }
+
+  resourceUrl(resourcePath: string): string {
+    return `${this.options.publicUrl}${resourcePath}`;
+  }
+
+  /** True when a `resource` parameter names one of this server's MCP endpoints (or is absent). */
+  acceptsResource(candidate: string | undefined): boolean {
+    if (!candidate) return true;
+    const wanted = stripResource(candidate);
+    return RESOURCE_PATHS.some((resourcePath) => stripResource(this.resourceUrl(resourcePath)) === wanted);
+  }
+
+  private get resourceList(): string {
+    return RESOURCE_PATHS.map((resourcePath) => this.resourceUrl(resourcePath)).join(' or ');
   }
 
   get kakaoRedirectUri(): string {
     return `${this.options.publicUrl}/oauth/kakao/callback`;
   }
 
-  get protectedResourceMetadataUrl(): string {
-    return `${this.options.publicUrl}/.well-known/oauth-protected-resource/mcp`;
+  protectedResourceMetadataUrl(resourcePath = '/mcp'): string {
+    return `${this.options.publicUrl}/.well-known/oauth-protected-resource${resourcePath}`;
   }
 
   async start(): Promise<void> {
@@ -221,9 +236,9 @@ export class OAuthServer {
 
   // ---- discovery documents ----------------------------------------------------
 
-  protectedResourceMetadata(): Record<string, unknown> {
+  protectedResourceMetadata(resourcePath = '/mcp'): Record<string, unknown> {
     return {
-      resource: this.resource,
+      resource: this.resourceUrl(resourcePath),
       authorization_servers: [this.issuer],
       bearer_methods_supported: ['header'],
       scopes_supported: [SCOPE],
@@ -359,7 +374,7 @@ export class OAuthServer {
       return fail('invalid_request', 'PKCE with code_challenge_method=S256 is required');
     }
     const resource = query.get('resource') ?? undefined;
-    if (!sameResource(resource, this.resource)) return fail('invalid_target', `resource must be ${this.resource}`);
+    if (!this.acceptsResource(resource)) return fail('invalid_target', `resource must be ${this.resourceList}`);
 
     const kakaoState = randomBytes(32).toString('base64url');
     this.pending.set(kakaoState, { clientId, redirectUri, codeChallenge, state, resource, expires: Date.now() + PENDING_TTL_MS });
@@ -507,7 +522,7 @@ export class OAuthServer {
     const challenge = createHash('sha256').update(verifier).digest('base64url');
     if (!verifier || challenge !== record.codeChallenge) throw new OAuthRequestError('invalid_grant', 'PKCE code_verifier does not match');
     const resource = form.get('resource') ?? record.resource;
-    if (!sameResource(resource, this.resource)) throw new OAuthRequestError('invalid_target', `resource must be ${this.resource}`);
+    if (!this.acceptsResource(resource)) throw new OAuthRequestError('invalid_target', `resource must be ${this.resourceList}`);
     return this.issueTokens(record.clientId, record.user, resource);
   }
 
@@ -521,7 +536,7 @@ export class OAuthServer {
     const clientId = form.get('client_id');
     if (clientId && clientId !== record.clientId) throw new OAuthRequestError('invalid_grant', 'client_id does not match the refresh token');
     const resource = form.get('resource') ?? record.resource;
-    if (!sameResource(resource, this.resource)) throw new OAuthRequestError('invalid_target', `resource must be ${this.resource}`);
+    if (!this.acceptsResource(resource)) throw new OAuthRequestError('invalid_target', `resource must be ${this.resourceList}`);
     // Rotation: the old refresh token and the access tokens issued with it stop working.
     this.revokeFamily(hash);
     return this.issueTokens(record.clientId, record.user, resource);

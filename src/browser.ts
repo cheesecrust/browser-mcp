@@ -122,6 +122,17 @@ export function normalizeUrl(input: string): string {
  * Owns the Playwright browser for the lifetime of the MCP server: lazy launch,
  * tab bookkeeping, dialog tracking and per-page console/network logs.
  */
+/** Serializes work on one browser: Playwright actions from different callers must not interleave. */
+export class Mutex {
+  private tail: Promise<unknown> = Promise.resolve();
+
+  run<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(task, task);
+    this.tail = result.catch(() => undefined);
+    return result;
+  }
+}
+
 export class BrowserSession {
   private browser?: Browser;
   private context?: BrowserContext;
@@ -131,6 +142,8 @@ export class BrowserSession {
   private persistTimer?: NodeJS.Timeout;
   private readonly blockedSeen = new Set<string>();
   readonly downloads: DownloadEntry[] = [];
+  /** Tool calls and shutdown run one at a time through this lock, even from several MCP sessions. */
+  readonly mutex = new Mutex();
 
   constructor(
     readonly config: Config,

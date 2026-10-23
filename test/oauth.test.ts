@@ -413,6 +413,17 @@ async function main(): Promise<void> {
     assert.equal(authorizeRequest?.params.scope, 'account_email');
     await aliceClient.close();
 
+    step('/mcp/lite is a second protected resource with the chat tool set');
+    const litePrm = (await (await fetch(`${publicUrl}/.well-known/oauth-protected-resource/mcp/lite`)).json()) as Record<string, unknown>;
+    assert.equal(litePrm.resource, `${mcpUrl}/lite`);
+    const liteChallenge = await fetch(`${mcpUrl}/lite`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(liteChallenge.status, 401);
+    assert.match(liteChallenge.headers.get('www-authenticate') ?? '', /oauth-protected-resource\/mcp\/lite"/);
+    const aliceLite = new TestProvider(callback.url);
+    const { client: liteClient } = await loginWithSdk(`${mcpUrl}/lite`, aliceLite, callback);
+    assert.equal((await liteClient.listTools()).tools.length, 14);
+    await liteClient.close();
+
     step('a Kakao account outside the allow list is refused with its id in the error');
     kakao.setUser({ id: 2002, nickname: 'Mallory', email: 'mallory@example.com' });
     const mallory = new TestProvider(callback.url);

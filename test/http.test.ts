@@ -97,10 +97,14 @@ async function connect(url: string, token?: string): Promise<Session> {
   return { client, transport, call };
 }
 
-async function health(url: string): Promise<{ ok: boolean; sessions: number }> {
+async function health(url: string): Promise<{ ok: boolean; sessions: number; browsers: number }> {
   const response = await fetch(new URL('/healthz', url));
   assert.equal(response.status, 200);
-  return (await response.json()) as { ok: boolean; sessions: number };
+  return (await response.json()) as { ok: boolean; sessions: number; browsers: number };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function waitFor(check: () => Promise<boolean>, timeoutMs: number, what: string): Promise<void> {
@@ -120,7 +124,7 @@ async function main(): Promise<void> {
 
   try {
     // ---- server A: authenticated, private network allowed so the fixture is reachable ----
-    const a = await startServer(['--allow-private-network', '--data-dir', dataDir('a'), '--idle-timeout', '120'], {
+    const a = await startServer(['--allow-private-network', '--data-dir', dataDir('a'), '--idle-timeout', '120', '--max-sessions-per-user', '3'], {
       BROWSER_MCP_TOKENS: TOKENS,
     });
     servers.push(a);
@@ -159,6 +163,50 @@ async function main(): Promise<void> {
     const bobCookie = await bob.call('browser_evaluate', { expression: 'document.cookie' });
     assert.doesNotMatch(bobCookie.text, /who=alice/);
     assert.equal((await health(a.url)).sessions, 2);
+    assert.equal((await health(a.url)).browsers, 2);
+
+    step('sessions of the same user share one browser; closing a session keeps it');
+    const alice2 = await connect(a.url, ALICE);
+    const sharedTabs = await alice2.call('browser_tabs', { action: 'list' });
+    assert.match(sharedTabs.text, new RegExp(escapeRegExp(fixture.baseUrl)));
+    assert.equal((await health(a.url)).browsers, 2, 'no extra browser for the second session');
+    await alice2.transport.terminateSession();
+    await waitFor(async () => (await health(a.url)).sessions === 2, 10_000, 'second alice session to close');
+    const stillOpen = await alice.call('browser_snapshot', {});
+    assert.equal(stillOpen.isError, false, stillOpen.text);
+
+    step('requests without a session id are served statelessly against the same browser');
+    const stateless = await fetch(a.url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${ALICE}`,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'browser_tabs', arguments: { action: 'list' } } }),
+    });
+    assert.equal(stateless.status, 200);
+    assert.equal(stateless.headers.get('mcp-session-id'), null, 'no session is created');
+    const statelessText = await stateless.text();
+    assert.ok(statelessText.includes(fixture.baseUrl), `the stateless call saw alice's tab:\n${statelessText}`);
+    assert.equal((await health(a.url)).sessions, 2);
+
+    step('/mcp/lite exposes the chat subset without screenshots');
+    const lite = await connect(`${a.url}/lite`, ALICE);
+    const liteTools = (await lite.client.listTools()).tools;
+    const liteNames = liteTools.map((tool) => tool.name);
+    assert.equal(liteNames.length, 14);
+    assert.ok(liteNames.includes('browser_click') && liteNames.includes('browser_navigate'));
+    assert.ok(!liteNames.includes('browser_screenshot') && !liteNames.includes('browser_evaluate') && !liteNames.includes('browser_file_upload'));
+    assert.ok(
+      liteTools.every((tool) => tool.annotations?.title && typeof tool.annotations.readOnlyHint === 'boolean'),
+      'every tool carries a title and hints in its annotations',
+    );
+    assert.match(lite.client.getInstructions() ?? '', /chat subset/);
+    const liteTabs = await lite.call('browser_tabs', { action: 'list' });
+    assert.match(liteTabs.text, new RegExp(escapeRegExp(fixture.baseUrl)), 'the lite session uses the same browser');
+    await lite.transport.terminateSession();
+    await waitFor(async () => (await health(a.url)).sessions === 2, 10_000, 'lite session to close');
 
     step('a session cannot be used with another user\'s token');
     const stolen = await fetch(a.url, {
@@ -192,7 +240,9 @@ async function main(): Promise<void> {
     assert.equal(hostsUpload.isError, true);
     assert.match(hostsUpload.text, /workspace/);
 
-    step('closing a session saves the user state; a new session gets it back');
+    step('closing the browser saves the user state; the next session gets it back');
+    const closed = await alice.call('browser_close', {});
+    assert.equal(closed.isError, false, closed.text);
     await alice.transport.terminateSession();
     await waitFor(async () => (await health(a.url)).sessions === 1, 10_000, 'alice session to close');
     const statePath = path.join(dataDir('a'), 'users', 'alice', 'storage-state.json');
@@ -206,11 +256,17 @@ async function main(): Promise<void> {
     assert.match(restored.text, /who=alice/);
     assert.doesNotMatch(bobCookie.text, /who=alice/);
 
-    step('the per-user session limit is enforced');
+    step('beyond the per-user session limit the least recently used session is closed');
     const extra = [await connect(a.url, ALICE), await connect(a.url, ALICE)];
-    await assert.rejects(connect(a.url, ALICE), /429|open session/);
-    for (const session of extra) await session.transport.terminateSession();
-    await waitFor(async () => (await health(a.url)).sessions === 2, 10_000, 'extra sessions to close');
+    assert.equal((await health(a.url)).sessions, 4);
+    const fourth = await connect(a.url, ALICE);
+    assert.equal((await health(a.url)).sessions, 4, 'the oldest alice session was closed to make room');
+    await assert.rejects(alice.call('browser_snapshot', {}), /404|Session not found/);
+    const fourthTabs = await fourth.call('browser_tabs', { action: 'list' });
+    assert.equal(fourthTabs.isError, false, fourthTabs.text);
+    for (const session of [...extra, fourth]) await session.transport.terminateSession();
+    await waitFor(async () => (await health(a.url)).sessions === 1, 10_000, 'extra sessions to close');
+    alice = await connect(a.url, ALICE);
 
     step('SIGTERM closes every browser and exits cleanly');
     const exitCode = await a.stop();
@@ -260,6 +316,7 @@ async function main(): Promise<void> {
     const daveNav = await dave.call('browser_navigate', { url: fixture.baseUrl });
     assert.equal(daveNav.isError, false, daveNav.text);
     await waitFor(async () => (await health(c.url)).sessions === 0, 10_000, 'idle session to close');
+    await waitFor(async () => (await health(c.url)).browsers === 0, 10_000, 'idle browser to close');
     await assert.rejects(dave.call('browser_snapshot', {}), /404|Session not found/);
     await dave.client.close().catch(() => undefined);
     await c.stop();

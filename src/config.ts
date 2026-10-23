@@ -85,7 +85,7 @@ export const DEFAULTS = {
   port: 3000,
   idleTimeoutSeconds: 900,
   maxSessions: 20,
-  maxSessionsPerUser: 3,
+  maxSessionsPerUser: 10,
   accessTokenTtlSeconds: 24 * 60 * 60,
   kakaoEndpoints: {
     authorizeUrl: 'https://kauth.kakao.com/oauth/authorize',
@@ -124,9 +124,9 @@ Remote (HTTP) mode:
   --tokens-file <file>       JSON file mapping bearer tokens to user names (see README)
   --allow-unauthenticated    Accept requests without a token (loopback address only)
   --data-dir <dir>           Per-user state directory (default: ~/.browser-mcp)
-  --idle-timeout <seconds>   Close sessions idle for this long (default: ${DEFAULTS.idleTimeoutSeconds})
-  --max-sessions <n>         Total concurrent sessions (default: ${DEFAULTS.maxSessions})
-  --max-sessions-per-user <n> Concurrent sessions per user (default: ${DEFAULTS.maxSessionsPerUser})
+  --idle-timeout <seconds>   Close a user's browser and sessions idle for this long (default: ${DEFAULTS.idleTimeoutSeconds})
+  --max-sessions <n>         Concurrent browsers, one per user (default: ${DEFAULTS.maxSessions})
+  --max-sessions-per-user <n> Open MCP sessions per user; beyond this the least recently used one is closed (default: ${DEFAULTS.maxSessionsPerUser})
   --allow-private-network    Let the browser open local files and private/loopback addresses (off by default with --http)
 
 Kakao Login (clients authenticate with a Kakao account instead of static tokens):

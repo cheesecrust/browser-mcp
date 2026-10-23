@@ -10,20 +10,42 @@ import type { Config } from './config.js';
 import { log } from './log.js';
 import { OAuthServer, type OAuthOutcome } from './oauth.js';
 import { UrlGuard } from './policy.js';
-import { createServer } from './server.js';
+import { createServer, LITE_TOOLS, type ToolProfile } from './server.js';
+import type { ToolCallInfo } from './tools/common.js';
 
 /**
- * Remote mode: one MCP session (Mcp-Session-Id) per connected client, each with its
- * own browser, bound to the user that the bearer token identifies. Users are
- * identified by static tokens, by Kakao Login (OAuth), or not at all on a
- * loopback-only test server.
+ * Remote mode. The bearer token (a static token or a Kakao Login access token)
+ * identifies the user, and every user gets one browser that all of their MCP
+ * sessions and session-less requests share:
+ * - a POST initialize without Mcp-Session-Id opens a session (Claude Code, Codex,
+ *   Cursor and other stateful clients);
+ * - any other POST without Mcp-Session-Id is answered statelessly against the same
+ *   browser (gateways that do not keep sessions, such as PlayMCP);
+ * - the browser closes after --idle-timeout without tool calls and relaunches with
+ *   the user's saved state on the next call.
+ * /mcp serves every tool; /mcp/lite serves the chat-oriented subset. Both paths are
+ * OAuth protected resources (see RESOURCE_PATHS in oauth.ts).
  */
+
+const PROFILES: Readonly<Record<string, ToolProfile>> = { '/mcp': 'full', '/mcp/lite': 'lite' };
+const PROTECTED_RESOURCE_PREFIX = '/.well-known/oauth-protected-resource';
+const MAX_FORM_BYTES = 64 * 1024;
+const MAX_MCP_BYTES = 4 * 1024 * 1024;
+const short = (id: string): string => id.slice(0, 8);
+
+interface UserEntry {
+  user: string;
+  browser: BrowserSession;
+  lastActivity: number;
+  /** Ids of the open MCP sessions that use this browser. */
+  sessions: Set<string>;
+}
 
 interface SessionEntry {
   id: string;
   user: string;
+  profile: ToolProfile;
   transport: NodeStreamableHTTPServerTransport;
-  browser: BrowserSession;
   createdAt: number;
   lastActivity: number;
   closing: boolean;
@@ -41,47 +63,91 @@ export interface HttpServerHandle {
   close(): Promise<void>;
 }
 
-const MAX_BODY_BYTES = 64 * 1024;
-const short = (id: string): string => id.slice(0, 8);
-
-class SessionRegistry {
+class Registry {
+  private readonly users = new Map<string, UserEntry>();
   private readonly sessions = new Map<string, SessionEntry>();
 
-  get size(): number {
+  get sessionCount(): number {
     return this.sessions.size;
   }
 
-  countFor(user: string): number {
+  get userCount(): number {
+    return this.users.size;
+  }
+
+  get browserCount(): number {
     let count = 0;
-    for (const entry of this.sessions.values()) if (entry.user === user) count++;
+    for (const entry of this.users.values()) if (entry.browser.running) count++;
     return count;
   }
 
-  get(id: string): SessionEntry | undefined {
+  user(name: string): UserEntry | undefined {
+    return this.users.get(name);
+  }
+
+  addUser(entry: UserEntry): void {
+    this.users.set(entry.user, entry);
+  }
+
+  session(id: string): SessionEntry | undefined {
     return this.sessions.get(id);
   }
 
-  add(entry: SessionEntry): void {
+  addSession(entry: SessionEntry): void {
     this.sessions.set(entry.id, entry);
+    this.users.get(entry.user)?.sessions.add(entry.id);
   }
 
-  idle(maxIdleMs: number): SessionEntry[] {
+  /** The least recently active open session of a user. */
+  oldestSessionOf(user: string): SessionEntry | undefined {
+    let oldest: SessionEntry | undefined;
+    for (const entry of this.sessions.values()) {
+      if (entry.user === user && !entry.closing && (!oldest || entry.lastActivity < oldest.lastActivity)) oldest = entry;
+    }
+    return oldest;
+  }
+
+  /** The least recently active user without open sessions, whose browser can make room. */
+  evictableUser(): UserEntry | undefined {
+    let oldest: UserEntry | undefined;
+    for (const entry of this.users.values()) {
+      if (entry.sessions.size === 0 && (!oldest || entry.lastActivity < oldest.lastActivity)) oldest = entry;
+    }
+    return oldest;
+  }
+
+  idleSessions(maxIdleMs: number): SessionEntry[] {
     const cutoff = Date.now() - maxIdleMs;
     return [...this.sessions.values()].filter((entry) => entry.lastActivity < cutoff);
   }
 
-  async close(id: string, reason: string): Promise<void> {
+  idleUsers(maxIdleMs: number): UserEntry[] {
+    const cutoff = Date.now() - maxIdleMs;
+    return [...this.users.values()].filter((entry) => entry.lastActivity < cutoff && (entry.browser.running || entry.sessions.size === 0));
+  }
+
+  async closeSession(id: string, reason: string): Promise<void> {
     const entry = this.sessions.get(id);
     if (!entry || entry.closing) return;
     entry.closing = true;
     this.sessions.delete(id);
+    this.users.get(entry.user)?.sessions.delete(id);
     log(`session ${short(id)} (${entry.user}) closed: ${reason}`);
-    await entry.browser.close();
     await entry.transport.close().catch(() => undefined);
   }
 
+  /** Closes a user's browser (saving its state). The entry stays while sessions still point at it. */
+  async closeBrowser(entry: UserEntry, reason: string): Promise<void> {
+    if (entry.browser.running) {
+      log(`browser of ${entry.user} closed: ${reason}`);
+      await entry.browser.mutex.run(() => entry.browser.close());
+    }
+    if (entry.sessions.size === 0 && this.users.get(entry.user) === entry) this.users.delete(entry.user);
+  }
+
   async closeAll(reason: string): Promise<void> {
-    await Promise.all([...this.sessions.keys()].map((id) => this.close(id, reason)));
+    await Promise.all([...this.sessions.keys()].map((id) => this.closeSession(id, reason)));
+    await Promise.all([...this.users.values()].map((entry) => this.closeBrowser(entry, reason)));
   }
 }
 
@@ -115,19 +181,34 @@ function rpcError(code: number, message: string): unknown {
   return { jsonrpc: '2.0', error: { code, message }, id: null };
 }
 
-/** Reads a small request body as JSON or form data. */
-async function readBody(req: IncomingMessage): Promise<URLSearchParams | unknown> {
+async function readRaw(req: IncomingMessage, limit: number): Promise<string> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > MAX_BODY_BYTES) throw new Error('request body too large');
+    if (size > limit) throw new Error('request body too large');
     chunks.push(chunk as Buffer);
   }
-  const text = Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/** Reads a small OAuth request body as JSON or form data. */
+async function readBody(req: IncomingMessage): Promise<URLSearchParams | unknown> {
+  const text = await readRaw(req, MAX_FORM_BYTES);
   const type = (req.headers['content-type'] ?? '').toLowerCase();
   if (type.includes('application/json')) return text ? (JSON.parse(text) as unknown) : {};
   return new URLSearchParams(text);
+}
+
+/** Reads an MCP request body; the transport gets it pre-parsed so the stream is read once. */
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  const text = await readRaw(req, MAX_MCP_BYTES);
+  return text.trim() ? (JSON.parse(text) as unknown) : {};
+}
+
+function isInitialize(body: unknown): boolean {
+  const messages = Array.isArray(body) ? body : [body];
+  return messages.some((message) => Boolean(message) && typeof message === 'object' && (message as { method?: unknown }).method === 'initialize');
 }
 
 function asForm(body: URLSearchParams | unknown): URLSearchParams {
@@ -139,6 +220,10 @@ function asForm(body: URLSearchParams | unknown): URLSearchParams {
     }
   }
   return params;
+}
+
+function withAuth(req: IncomingMessage, authInfo: AuthInfo): void {
+  (req as IncomingMessage & { auth?: AuthInfo }).auth = authInfo;
 }
 
 export async function startHttpServer(config: Config): Promise<HttpServerHandle> {
@@ -160,7 +245,8 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
     : undefined;
   const unauthenticated = tokens.size === 0 && !oauth;
   const guard = config.allowPrivateNetwork ? undefined : new UrlGuard();
-  const registry = new SessionRegistry();
+  const registry = new Registry();
+  const creating = new Map<string, Promise<UserEntry | undefined>>();
   const validateHost = localhostHostValidation();
   const validateOrigin = localhostOriginValidation();
   await mkdir(config.dataDir, { recursive: true });
@@ -178,6 +264,42 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
     return new BrowserSession(config, { workspace, storageStatePath: path.join(root, 'storage-state.json'), guard });
   }
 
+  /** The user's browser entry, created on first use; undefined when the server is full. */
+  async function ensureUser(principal: Principal): Promise<UserEntry | undefined> {
+    const { user } = principal;
+    const existing = registry.user(user);
+    if (existing) {
+      existing.lastActivity = Date.now();
+      return existing;
+    }
+    const pending = creating.get(user);
+    if (pending) return pending;
+    const task = (async (): Promise<UserEntry | undefined> => {
+      if (registry.userCount >= config.maxSessions) {
+        const victim = registry.evictableUser();
+        if (!victim) return undefined;
+        await registry.closeBrowser(victim, `browser limit (${config.maxSessions}) reached`);
+      }
+      const entry: UserEntry = { user, browser: await createBrowserSession(user), lastActivity: Date.now(), sessions: new Set() };
+      registry.addUser(entry);
+      log(`workspace ready for ${user}${principal.display ? ` (${principal.display})` : ''}`);
+      return entry;
+    })();
+    creating.set(user, task);
+    try {
+      return await task;
+    } finally {
+      creating.delete(user);
+    }
+  }
+
+  function toolCallLogger(entry: UserEntry, sessionLabel: () => string): (info: ToolCallInfo) => void {
+    return (info) => {
+      entry.lastActivity = Date.now();
+      log(`user=${entry.user} session=${sessionLabel()} tool=${info.name} ok=${info.ok} ms=${info.ms}${info.url ? ` url=${info.url}` : ''}`);
+    };
+  }
+
   /** Identifies the caller from the Authorization header: static token first, then an OAuth access token. */
   function authenticate(authorization: string | undefined): Principal | undefined {
     if (unauthenticated) return { user: 'local' };
@@ -191,39 +313,43 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
     return undefined;
   }
 
-  function challenge(res: ServerResponse, tokenPresented: boolean): void {
+  function challenge(res: ServerResponse, tokenPresented: boolean, resourcePath: string): void {
     const parts = ['Bearer realm="browser-mcp"'];
     if (tokenPresented) parts.push('error="invalid_token"', 'error_description="The access token is missing, expired or revoked"');
-    if (oauth) parts.push(`resource_metadata="${oauth.protectedResourceMetadataUrl}"`);
+    if (oauth) parts.push(`resource_metadata="${oauth.protectedResourceMetadataUrl(resourcePath)}"`);
     sendJson(res, 401, { error: 'unauthorized' }, { 'www-authenticate': parts.join(', ') });
   }
 
-  async function openSession(principal: Principal, authInfo: AuthInfo, req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const { user } = principal;
-    if (registry.size >= config.maxSessions) {
-      sendJson(res, 503, rpcError(-32000, 'The server is at its session limit; try again later'));
+  function serverFull(res: ServerResponse): void {
+    sendJson(res, 503, rpcError(-32000, 'The server is at its browser limit; try again later'));
+  }
+
+  /** POST initialize without a session id: opens a session bound to the user's browser. */
+  async function openSession(
+    principal: Principal,
+    authInfo: AuthInfo,
+    profile: ToolProfile,
+    req: IncomingMessage,
+    res: ServerResponse,
+    body: unknown,
+  ): Promise<void> {
+    const user = await ensureUser(principal);
+    if (!user) {
+      serverFull(res);
       return;
     }
-    const open = registry.countFor(user);
-    if (open >= config.maxSessionsPerUser) {
-      sendJson(
-        res,
-        429,
-        rpcError(
-          -32000,
-          `You already have ${open} open session(s). Close one (HTTP DELETE /mcp with its Mcp-Session-Id) or wait for the idle timeout.`,
-        ),
-      );
-      return;
+    while (user.sessions.size >= config.maxSessionsPerUser) {
+      const victim = registry.oldestSessionOf(user.user);
+      if (!victim) break;
+      await registry.closeSession(victim.id, `per-user session limit (${config.maxSessionsPerUser}) reached`);
     }
 
-    const browser = await createBrowserSession(user);
     const now = Date.now();
     const entry: SessionEntry = {
       id: '',
-      user,
+      user: user.user,
+      profile,
       transport: undefined as unknown as NodeStreamableHTTPServerTransport,
-      browser,
       createdAt: now,
       lastActivity: now,
       closing: false,
@@ -232,39 +358,58 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (id) => {
         entry.id = id;
-        registry.add(entry);
-        log(`session ${short(id)} opened for ${user}${principal.display ? ` (${principal.display})` : ''}`);
+        registry.addSession(entry);
+        log(`session ${short(id)} opened for ${user.user}${principal.display ? ` (${principal.display})` : ''} (${profile})`);
       },
-      onsessionclosed: (id) => void registry.close(id, 'closed by client'),
+      onsessionclosed: (id) => void registry.closeSession(id, 'closed by client'),
     });
     entry.transport = transport;
 
-    const mcp = createServer(browser, {
-      remote: true,
-      onToolCall: (info) =>
-        log(`user=${user} session=${short(entry.id)} tool=${info.name} ok=${info.ok} ms=${info.ms}${info.url ? ` url=${info.url}` : ''}`),
-    });
+    const mcp = createServer(user.browser, { remote: true, profile, onToolCall: toolCallLogger(user, () => short(entry.id)) });
     mcp.server.onclose = () => {
-      if (entry.id) void registry.close(entry.id, 'transport closed');
-      else void browser.close();
+      if (entry.id) void registry.closeSession(entry.id, 'transport closed');
     };
     await mcp.connect(transport);
 
-    (req as IncomingMessage & { auth?: AuthInfo }).auth = authInfo;
-    await transport.handleRequest(req, res);
-    if (!entry.id) {
-      // Not an initialize request (the transport answered with an error): nothing to keep.
-      await transport.close().catch(() => undefined);
-      await browser.close();
+    withAuth(req, authInfo);
+    await transport.handleRequest(req, res, body);
+    // The transport answered with an error instead of opening a session: nothing to keep.
+    if (!entry.id) await transport.close().catch(() => undefined);
+  }
+
+  /** A POST without a session id that is not initialize: answered against the user's browser, then forgotten. */
+  async function serveStateless(
+    principal: Principal,
+    authInfo: AuthInfo,
+    profile: ToolProfile,
+    req: IncomingMessage,
+    res: ServerResponse,
+    body: unknown,
+  ): Promise<void> {
+    const user = await ensureUser(principal);
+    if (!user) {
+      serverFull(res);
+      return;
     }
+    const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    const mcp = createServer(user.browser, { remote: true, profile, onToolCall: toolCallLogger(user, () => 'none') });
+    await mcp.connect(transport);
+    res.once('close', () => void transport.close().catch(() => undefined));
+    withAuth(req, authInfo);
+    await transport.handleRequest(req, res, body);
   }
 
   async function handleOAuth(pathname: string, req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
     if (!oauth) return false;
     const method = req.method ?? 'GET';
+    const resourcePath =
+      pathname === PROTECTED_RESOURCE_PREFIX
+        ? '/mcp'
+        : pathname.startsWith(`${PROTECTED_RESOURCE_PREFIX}/`)
+          ? pathname.slice(PROTECTED_RESOURCE_PREFIX.length)
+          : undefined;
     const isOAuthPath =
-      pathname === '/.well-known/oauth-protected-resource' ||
-      pathname === '/.well-known/oauth-protected-resource/mcp' ||
+      resourcePath !== undefined ||
       pathname === '/.well-known/oauth-authorization-server' ||
       pathname === '/register' ||
       pathname === '/authorize' ||
@@ -277,11 +422,12 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
       res.end();
       return true;
     }
+    if (resourcePath !== undefined) {
+      if (!(resourcePath in PROFILES)) sendJson(res, 404, { error: 'not found' });
+      else sendJson(res, 200, oauth.protectedResourceMetadata(resourcePath), CORS_HEADERS);
+      return true;
+    }
     switch (pathname) {
-      case '/.well-known/oauth-protected-resource':
-      case '/.well-known/oauth-protected-resource/mcp':
-        sendJson(res, 200, oauth.protectedResourceMetadata(), CORS_HEADERS);
-        return true;
       case '/.well-known/oauth-authorization-server':
         sendJson(res, 200, oauth.authorizationServerMetadata(), CORS_HEADERS);
         return true;
@@ -315,11 +461,17 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
     const url = new URL(req.url ?? '/', 'http://localhost');
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
     if (pathname === '/healthz') {
-      sendJson(res, 200, { ok: true, sessions: registry.size, uptime: Math.round(process.uptime()) });
+      sendJson(res, 200, {
+        ok: true,
+        sessions: registry.sessionCount,
+        browsers: registry.browserCount,
+        uptime: Math.round(process.uptime()),
+      });
       return;
     }
     if (await handleOAuth(pathname, req, res, url)) return;
-    if (pathname !== '/mcp') {
+    const profile = PROFILES[pathname];
+    if (!profile) {
       sendJson(res, 404, { error: 'not found' });
       return;
     }
@@ -327,30 +479,44 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
 
     const principal = authenticate(req.headers.authorization);
     if (!principal) {
-      challenge(res, Boolean(req.headers.authorization));
+      challenge(res, Boolean(req.headers.authorization), pathname);
       return;
     }
     const { user } = principal;
     const authInfo: AuthInfo = { token: 'opaque', clientId: user, scopes: ['browser'], extra: { user, display: principal.display } };
 
+    let body: unknown;
+    if (req.method === 'POST') {
+      try {
+        body = await readJsonBody(req);
+      } catch (error) {
+        sendJson(res, 400, rpcError(-32700, `Parse error: ${error instanceof Error ? error.message : String(error)}`));
+        return;
+      }
+    }
+
     const header = req.headers['mcp-session-id'];
     const sessionId = Array.isArray(header) ? header[0] : header;
     if (sessionId) {
-      const entry = registry.get(sessionId);
+      const entry = registry.session(sessionId);
       if (!entry || entry.user !== user) {
         sendJson(res, 404, rpcError(-32001, 'Session not found'));
         return;
       }
-      entry.lastActivity = Date.now();
-      (req as IncomingMessage & { auth?: AuthInfo }).auth = authInfo;
-      await entry.transport.handleRequest(req, res);
+      const now = Date.now();
+      entry.lastActivity = now;
+      const owner = registry.user(user);
+      if (owner) owner.lastActivity = now;
+      withAuth(req, authInfo);
+      await entry.transport.handleRequest(req, res, body);
       return;
     }
     if (req.method !== 'POST') {
-      sendJson(res, 400, rpcError(-32000, 'Bad Request: an Mcp-Session-Id header is required'));
+      sendJson(res, 400, rpcError(-32000, 'Bad Request: an Mcp-Session-Id header is required for GET and DELETE'));
       return;
     }
-    await openSession(principal, authInfo, req, res);
+    if (isInitialize(body)) await openSession(principal, authInfo, profile, req, res, body);
+    else await serveStateless(principal, authInfo, profile, req, res, body);
   }
 
   const server = createHttpServer((req, res) => {
@@ -363,7 +529,8 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
 
   const sweepEvery = Math.min(30_000, Math.max(500, Math.floor(config.idleTimeoutMs / 2)));
   const sweeper = setInterval(() => {
-    for (const entry of registry.idle(config.idleTimeoutMs)) void registry.close(entry.id, 'idle timeout');
+    for (const entry of registry.idleSessions(config.idleTimeoutMs)) void registry.closeSession(entry.id, 'idle timeout');
+    for (const entry of registry.idleUsers(config.idleTimeoutMs)) void registry.closeBrowser(entry, 'idle timeout');
   }, sweepEvery);
   sweeper.unref();
 
@@ -382,14 +549,14 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
     : [oauth ? 'Kakao login' : undefined, tokens.size ? `${tokens.size} static token(s)` : undefined].filter(Boolean).join(' + ');
   log(
     `listening on http://${hostForUrl}:${port}/mcp (${authDescription}, ${guard ? 'public web only' : 'private network allowed'}, ` +
-      `idle timeout ${Math.round(config.idleTimeoutMs / 1000)}s, data in ${config.dataDir})`,
+      `idle timeout ${Math.round(config.idleTimeoutMs / 1000)}s, data in ${config.dataDir}); /mcp/lite serves the ${LITE_TOOLS.size}-tool chat subset`,
   );
 
   let closing: Promise<void> | undefined;
   return {
     host: config.host,
     port,
-    sessionCount: () => registry.size,
+    sessionCount: () => registry.sessionCount,
     close: () => {
       closing ??= (async () => {
         clearInterval(sweeper);
