@@ -444,7 +444,15 @@ export class OAuthServer {
       return { kind: 'html', status: 400, body: htmlPage('알 수 없는 클라이언트', 'client_id가 등록되어 있지 않습니다. 클라이언트에서 다시 연결해 주세요.') };
     }
     if (!redirectAllowed(client, redirectUri)) {
-      return { kind: 'html', status: 400, body: htmlPage('잘못된 redirect_uri', '이 클라이언트에 등록되지 않은 redirect_uri입니다.') };
+      log(`authorize refused: redirect_uri ${redirectUri || '(empty)'} is not registered for client ${clientId}`);
+      return {
+        kind: 'html',
+        status: 400,
+        body: htmlPage(
+          '잘못된 redirect_uri',
+          `이 클라이언트(${clientId})에 등록되지 않은 redirect_uri입니다: ${redirectUri || '(없음)'} — 서버 관리자가 이 주소를 클라이언트 설정에 추가해야 합니다.`,
+        ),
+      };
     }
 
     const state = query.get('state') ?? undefined;
