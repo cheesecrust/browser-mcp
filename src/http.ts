@@ -156,7 +156,7 @@ class Registry {
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET, POST, OPTIONS',
-  'access-control-allow-headers': 'content-type, authorization, mcp-protocol-version',
+  'access-control-allow-headers': 'content-type, authorization, x-api-key, mcp-protocol-version',
 };
 
 function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
@@ -341,9 +341,10 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
   }
 
   /** Identifies the caller from the Authorization header: static token first, then an OAuth access token. */
-  function authenticate(authorization: string | undefined): Principal | undefined {
+  function authenticate(authorization: string | undefined, apiKey: string | undefined): Principal | undefined {
     if (unauthenticated) return { user: 'local' };
-    const staticUser = tokens.authenticate(authorization);
+    // Static tokens: "Authorization: Bearer <token>", a bare Authorization value, or X-API-Key (gateways with fixed header forms).
+    const staticUser = tokens.authenticate(authorization) ?? (apiKey ? tokens.userFor(apiKey.trim()) : undefined);
     if (staticUser) return { user: staticUser };
     if (oauth) {
       const match = /^\s*Bearer\s+(\S+)\s*$/i.exec(authorization ?? '');
@@ -543,13 +544,15 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
     const header = req.headers['mcp-session-id'];
     const sessionId = Array.isArray(header) ? header[0] : header;
 
-    const principal = authenticate(req.headers.authorization);
+    const apiKeyHeader = req.headers['x-api-key'];
+    const apiKey = Array.isArray(apiKeyHeader) ? apiKeyHeader[0] : apiKeyHeader;
+    const principal = authenticate(req.headers.authorization, apiKey);
     if (!principal) {
-      if (profile === 'lite' && !req.headers.authorization && req.method === 'POST' && !sessionId && isDiscoveryOnly(body)) {
+      if (profile === 'lite' && !req.headers.authorization && !apiKey && req.method === 'POST' && !sessionId && isDiscoveryOnly(body)) {
         await serveDiscovery(profile, req, res, body);
         return;
       }
-      challenge(res, Boolean(req.headers.authorization), pathname);
+      challenge(res, Boolean(req.headers.authorization || apiKey), pathname);
       return;
     }
     const { user } = principal;

@@ -111,7 +111,7 @@ export class TokenStore {
   /** Extracts and verifies the token of an `Authorization: Bearer ...` header value. */
   authenticate(authorization: string | undefined): string | undefined {
     if (!authorization) return undefined;
-    const match = /^\s*Bearer\s+(\S+)\s*$/i.exec(authorization);
+    const match = /^\s*(?:Bearer\s+)?(\S+)\s*$/i.exec(authorization);
     if (!match) return undefined;
     return this.userFor(match[1]!);
   }

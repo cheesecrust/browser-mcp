@@ -196,7 +196,7 @@ claude mcp add --transport http --scope user browser https://<호스트>/mcp
 url = "https://<호스트>/mcp"
 ```
 
-고정 토큰을 쓰는 서버는 헤더로 토큰을 넘깁니다.
+고정 토큰을 쓰는 서버는 헤더로 토큰을 넘깁니다. `Authorization: Bearer <토큰>`이 기본이고, 헤더 형식을 정해 둔 게이트웨이를 위해 `Authorization: <토큰>`과 `X-API-Key: <토큰>`도 받습니다.
 
 ```bash
 # Claude Code (고정 토큰)

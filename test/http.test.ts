@@ -226,6 +226,14 @@ async function main(): Promise<void> {
     const anonCall = await anonymousPost(`${a.url}/lite`, rpc('tools/call', { name: 'browser_tabs', arguments: { action: 'list' } }));
     assert.equal(anonCall.status, 401);
     assert.equal((await anonymousPost(a.url, rpc('tools/list'))).status, 401, 'the full endpoint still needs a token');
+    for (const headers of [{ authorization: ALICE }, { 'x-api-key': ALICE }]) {
+      const keyed = await fetch(a.url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json', ...headers },
+        body: rpc('tools/call', { name: 'browser_tabs', arguments: { action: 'list' } }),
+      });
+      assert.equal(keyed.status, 200, `static token accepted via ${Object.keys(headers)[0]}`);
+    }
     assert.equal((await health(a.url)).browsers, 2, 'discovery launched no browser');
 
     step('a session cannot be used with another user\'s token');
