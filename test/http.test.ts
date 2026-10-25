@@ -144,7 +144,7 @@ async function main(): Promise<void> {
     step('an authenticated client gets the full tool set and remote instructions');
     let alice = await connect(a.url, ALICE);
     const tools = await alice.client.listTools();
-    assert.equal(tools.tools.length, 23);
+    assert.equal(tools.tools.length, 25);
     assert.match(alice.client.getInstructions() ?? '', /shared remote server/);
     assert.ok(alice.transport.sessionId, 'server assigned a session id');
 
@@ -195,7 +195,7 @@ async function main(): Promise<void> {
     const lite = await connect(`${a.url}/lite`, ALICE);
     const liteTools = (await lite.client.listTools()).tools;
     const liteNames = liteTools.map((tool) => tool.name);
-    assert.equal(liteNames.length, 15);
+    assert.equal(liteNames.length, 17);
     assert.ok(liteNames.includes('browser_click') && liteNames.includes('browser_navigate'));
     assert.ok(!liteNames.includes('browser_screenshot') && !liteNames.includes('browser_evaluate') && !liteNames.includes('browser_file_upload'));
     assert.ok(
@@ -285,6 +285,50 @@ async function main(): Promise<void> {
     assert.ok(!after.text.includes(link), 'a new link is issued after the previous one finished');
     assert.equal((await alice.call('browser_navigate', { url: fixture.baseUrl })).isError, false, 'back on the fixture home for the next steps');
 
+    step('saved logins: the person stores them through a link, the agent types them without seeing them');
+    const noLogins = await alice.call('browser_request_credentials', {});
+    assert.equal(noLogins.isError, false, noLogins.text);
+    assert.match(noLogins.text, /No logins are saved yet/);
+    const secretsLink = /https?:\/\/\S+\/secrets\/[A-Za-z0-9_-]+/.exec(noLogins.text)?.[0];
+    assert.ok(secretsLink, `link in the tool result:\n${noLogins.text}`);
+    const secretsPage = await fetch(secretsLink);
+    assert.equal(secretsPage.status, 200);
+    assert.match(await secretsPage.text(), /로그인 정보 저장/);
+    const postSecrets = (action: string, body: unknown): Promise<Response> =>
+      fetch(`${secretsLink}/${action}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const badSave = await postSecrets('save', { domain: 'not a domain', username: 'x', password: 'y' });
+    assert.equal(badSave.status, 400);
+    const saved = await postSecrets('save', { domain: fixture.baseUrl, username: 'alice@example.com', password: 's3cret-pass', name: 'fixture' });
+    assert.equal(saved.status, 200, await saved.text());
+    const savedNaver = await postSecrets('save', { domain: 'https://nid.naver.com/nidlogin.login', username: 'someone', password: 'another-secret' });
+    assert.equal(savedNaver.status, 200);
+    assert.equal(((await savedNaver.json()) as { saved: { name: string; domain: string } }).saved.name, 'naver');
+    const vaultFile = await readFile(path.join(dataDir('a'), 'users', 'alice', 'credentials.json'), 'utf8');
+    assert.ok(!vaultFile.includes('s3cret-pass') && !vaultFile.includes('alice@example.com'), 'the vault file holds no plaintext');
+    assert.equal(((await stat(path.join(dataDir('a'), 'vault.key'))).mode & 0o777) === 0o600 || process.platform === 'win32', true);
+
+    const listed = await alice.call('browser_request_credentials', {});
+    assert.match(listed.text, /- fixture - 127\.0\.0\.1 - al\*\*\*m/);
+    assert.ok(!listed.text.includes('s3cret-pass') && !listed.text.includes('alice@example.com'));
+    const wrongSite = await alice.call('browser_fill_credential', { name: 'naver', field: 'password', selector: '#q' });
+    assert.equal(wrongSite.isError, true);
+    assert.match(wrongSite.text, /saved for naver\.com/);
+    const unknown = await alice.call('browser_fill_credential', { name: 'nothing', field: 'password', selector: '#q' });
+    assert.equal(unknown.isError, true);
+    assert.match(unknown.text, /No saved login named "nothing"/);
+    const filled = await alice.call('browser_fill_credential', { name: 'fixture', field: 'username', selector: '#q', submit: true });
+    assert.equal(filled.isError, false, filled.text);
+    assert.match(filled.text, /Typed the saved username for "fixture"/);
+    assert.match((await alice.call('browser_get_text', {})).text, /You searched for: alice@example\.com/);
+    assert.ok(!filled.text.includes('s3cret-pass'));
+
+    const removed = await postSecrets('delete', { name: 'naver' });
+    assert.deepEqual(((await removed.json()) as { entries: unknown[] }).entries.length, 1);
+    assert.equal((await postSecrets('close', {})).status, 200);
+    assert.equal((await fetch(`${secretsLink}/list`)).status, 410, 'a closed link stops working');
+    assert.equal((await fetch(secretsLink)).status, 410);
+    assert.equal((await alice.call('browser_navigate', { url: fixture.baseUrl })).isError, false);
+
     step('/mcp/lite answers tool discovery without a token, in plain JSON, but refuses tool calls');
     const rpc = (method: string, params?: unknown): string => JSON.stringify({ jsonrpc: '2.0', id: 1, method, params });
     const anonymousPost = (url: string, payload: string): Promise<Response> =>
@@ -293,7 +337,7 @@ async function main(): Promise<void> {
     assert.equal(anonList.status, 200);
     assert.match(anonList.headers.get('content-type') ?? '', /application\/json/);
     const anonTools = (await anonList.json()) as { result?: { tools?: Array<{ name: string }> } };
-    assert.equal(anonTools.result?.tools?.length, 15);
+    assert.equal(anonTools.result?.tools?.length, 17);
     const anonInit = await anonymousPost(
       `${a.url}/lite`,
       rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'anonymous', version: '0' } }),
@@ -432,7 +476,7 @@ async function main(): Promise<void> {
 
     step('an unauthenticated loopback server accepts local clients');
     const local = await connect(d.url);
-    assert.equal((await local.client.listTools()).tools.length, 23);
+    assert.equal((await local.client.listTools()).tools.length, 25);
     const localNavigate = await local.call('browser_navigate', { url: fixture.baseUrl });
     assert.equal(localNavigate.isError, false, localNavigate.text);
     await local.client.close().catch(() => undefined);

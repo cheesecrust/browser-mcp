@@ -62,6 +62,8 @@ export interface Config {
 
   /** Public base URL of this server as clients see it, e.g. https://browser.example.com (no trailing slash). */
   publicUrl?: string;
+  /** 32-byte hex key that seals saved logins; by default one is created in <data-dir>/vault.key. */
+  vaultKey?: string;
   /** REST API key of the Kakao app; when set, clients log in with their Kakao account. */
   kakaoClientId?: string;
   kakaoClientSecret?: string;
@@ -131,6 +133,7 @@ Remote (HTTP) mode:
   --max-sessions <n>         Concurrent browsers, one per user (default: ${DEFAULTS.maxSessions})
   --max-sessions-per-user <n> Open MCP sessions per user; beyond this the least recently used one is closed (default: ${DEFAULTS.maxSessionsPerUser})
   --allow-private-network    Let the browser open local files and private/loopback addresses (off by default with --http)
+  --vault-key <hex>          32-byte hex key that encrypts saved logins (default: created once in <data-dir>/vault.key)
 
 Kakao Login (clients authenticate with a Kakao account instead of static tokens):
   --public-url <url>         Public base URL of this server, e.g. https://browser.example.com (required)
@@ -152,7 +155,7 @@ BROWSER_MCP_SNAPSHOT_MAX_CHARS, BROWSER_MCP_DOWNLOADS_DIR, BROWSER_MCP_PROXY, BR
 BROWSER_MCP_HTTP, BROWSER_MCP_HOST, BROWSER_MCP_PORT, BROWSER_MCP_TOKENS_FILE,
 BROWSER_MCP_TOKENS ("token1:alice,token2:bob"), BROWSER_MCP_ALLOW_UNAUTHENTICATED, BROWSER_MCP_DATA_DIR,
 BROWSER_MCP_IDLE_TIMEOUT, BROWSER_MCP_MAX_SESSIONS, BROWSER_MCP_MAX_SESSIONS_PER_USER,
-BROWSER_MCP_ALLOW_PRIVATE_NETWORK, BROWSER_MCP_PUBLIC_URL, BROWSER_MCP_KAKAO_CLIENT_ID,
+BROWSER_MCP_ALLOW_PRIVATE_NETWORK, BROWSER_MCP_VAULT_KEY, BROWSER_MCP_PUBLIC_URL, BROWSER_MCP_KAKAO_CLIENT_ID,
 BROWSER_MCP_KAKAO_CLIENT_SECRET, BROWSER_MCP_KAKAO_SCOPE, BROWSER_MCP_ALLOWED_USERS,
 BROWSER_MCP_ACCESS_TOKEN_TTL. Command-line flags take precedence.
 `;
@@ -228,6 +231,7 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
         'max-sessions-per-user': { type: 'string' },
         'allow-private-network': { type: 'boolean' },
         'public-url': { type: 'string' },
+        'vault-key': { type: 'string' },
         'kakao-client-id': { type: 'string' },
         'kakao-client-secret': { type: 'string' },
         'kakao-scope': { type: 'string' },
@@ -307,6 +311,7 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
     maxSessionsPerUser: maxPerUserRaw ? parsePositiveInt(maxPerUserRaw, '--max-sessions-per-user') : DEFAULTS.maxSessionsPerUser,
     allowPrivateNetwork: bool('allow-private-network', 'ALLOW_PRIVATE_NETWORK') ?? !http,
     publicUrl: str('public-url', 'PUBLIC_URL')?.replace(/\/+$/, ''),
+    vaultKey: str('vault-key', 'VAULT_KEY'),
     kakaoClientId: str('kakao-client-id', 'KAKAO_CLIENT_ID'),
     kakaoClientSecret: str('kakao-client-secret', 'KAKAO_CLIENT_SECRET'),
     kakaoScope: str('kakao-scope', 'KAKAO_SCOPE'),

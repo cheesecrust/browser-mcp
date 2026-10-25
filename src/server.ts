@@ -2,7 +2,9 @@ import { McpServer } from '@modelcontextprotocol/server';
 import type { BrowserSession } from './browser.js';
 import { VERSION } from './config.js';
 import type { HandoffBroker } from './handoff.js';
+import type { CredentialBroker } from './vault.js';
 import { createRegistrar, type RegistrarHooks, type ToolRegistrar } from './tools/common.js';
+import { registerCredentialTools } from './tools/credentials.js';
 import { registerHandoffTools } from './tools/handoff.js';
 import { registerInspectionTools } from './tools/inspect.js';
 import { registerInteractionTools } from './tools/interact.js';
@@ -34,6 +36,8 @@ export const LITE_TOOLS: ReadonlySet<string> = new Set([
   'browser_tabs',
   'browser_close',
   'browser_request_human',
+  'browser_request_credentials',
+  'browser_fill_credential',
 ]);
 
 const REMOTE_NOTES = [
@@ -41,6 +45,7 @@ const REMOTE_NOTES = [
   '- Only public web sites can be opened. Local files and private network addresses are refused.',
   '- Nobody can see the browser window. If a site needs a human to log in, solve a CAPTCHA or pass a "verify you are human" check, call browser_request_human and give the person the link instead of guessing credentials or trying to solve it. Keep that tab open (no browser_close, no navigating away) until the person says they are done.',
   '- Logins (cookies) are kept for you between sessions.',
+  '- When a site asks for a user name and password, never ask the person for them in the chat: check browser_request_credentials for a saved login and type it with browser_fill_credential, or give the person its link to save the account first.',
 ];
 
 const REMOTE_FILE_NOTE =
@@ -76,6 +81,8 @@ export interface ServerOptions extends RegistrarHooks {
   profile?: ToolProfile;
   /** Enables browser_request_human (remote mode only: the person needs an HTTP endpoint to look at). */
   handoff?: HandoffBroker;
+  /** Enables the saved-login tools (remote mode only). */
+  credentials?: CredentialBroker;
 }
 
 export function createServer(session: BrowserSession, options: ServerOptions = {}): McpServer {
@@ -91,5 +98,6 @@ export function createServer(session: BrowserSession, options: ServerOptions = {
   registerInteractionTools(tool);
   registerTabTools(tool);
   if (options.handoff) registerHandoffTools(tool, options.handoff);
+  if (options.credentials) registerCredentialTools(tool, options.credentials);
   return server;
 }

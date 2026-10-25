@@ -9,6 +9,7 @@ import { BrowserSession, type Workspace } from './browser.js';
 import type { Config } from './config.js';
 import { HandoffManager } from './handoff.js';
 import { log } from './log.js';
+import { SecretLinkManager, Vault } from './vault.js';
 import { OAuthServer, type OAuthOutcome } from './oauth.js';
 import { UrlGuard } from './policy.js';
 import { createServer, LITE_TOOLS, type ToolProfile } from './server.js';
@@ -290,11 +291,14 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
   const unauthenticated = tokens.size === 0 && !oauth;
   const guard = config.allowPrivateNetwork ? undefined : new UrlGuard();
   const handoffs = new HandoffManager({ publicUrl: config.publicUrl });
+  const vault = new Vault(config.dataDir, config.vaultKey);
+  const secrets = new SecretLinkManager(vault, { publicUrl: config.publicUrl });
   const registry = new Registry(handoffs);
   const creating = new Map<string, Promise<UserEntry | undefined>>();
   const validateHost = localhostHostValidation();
   const validateOrigin = localhostOriginValidation();
   await mkdir(config.dataDir, { recursive: true });
+  await vault.init();
   if (oauth) await oauth.start();
 
   async function createBrowserSession(user: string): Promise<BrowserSession> {
@@ -426,6 +430,7 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
       profile,
       onToolCall: toolCallLogger(user, () => short(entry.id)),
       handoff: handoffs.brokerFor(user.user, user.browser, originOf(req)),
+      credentials: secrets.brokerFor(user.user, originOf(req)),
     });
     mcp.server.onclose = () => {
       if (entry.id) void registry.closeSession(entry.id, 'transport closed');
@@ -458,6 +463,7 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
       profile,
       onToolCall: toolCallLogger(user, () => 'none'),
       handoff: handoffs.brokerFor(user.user, user.browser, originOf(req)),
+      credentials: secrets.brokerFor(user.user, originOf(req)),
     });
     await mcp.connect(transport);
     res.once('close', () => void transport.close().catch(() => undefined));
@@ -474,7 +480,12 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: negotiateJson(req) });
     // The catalogue must match what a logged-in user gets, so the hand-over tool is listed too (it never runs here).
     const probe = new BrowserSession(config, { guard });
-    const mcp = createServer(probe, { remote: true, profile, handoff: handoffs.brokerFor('anonymous', probe, originOf(req)) });
+    const mcp = createServer(probe, {
+      remote: true,
+      profile,
+      handoff: handoffs.brokerFor('anonymous', probe, originOf(req)),
+      credentials: secrets.brokerFor('anonymous', originOf(req)),
+    });
     await mcp.connect(transport);
     res.once('close', () => void transport.close().catch(() => undefined));
     await transport.handleRequest(req, res, body);
@@ -553,6 +564,7 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
     if (await handleOAuth(pathname, req, res, url)) return;
     // Hand-over pages are reached by people with a link, not by MCP clients with a token.
     if (await handoffs.handle(pathname, req, res)) return;
+    if (await secrets.handle(pathname, req, res)) return;
     const profile = PROFILES[pathname];
     if (!profile) {
       sendJson(res, 404, { error: 'not found' });
@@ -651,6 +663,7 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
       closing ??= (async () => {
         clearInterval(sweeper);
         await handoffs.close();
+        secrets.close();
         await registry.closeAll('server shutting down');
         if (oauth) await oauth.close();
         server.closeAllConnections();
