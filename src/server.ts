@@ -39,7 +39,7 @@ export const LITE_TOOLS: ReadonlySet<string> = new Set([
 const REMOTE_NOTES = [
   'This browser runs on a shared remote server:',
   '- Only public web sites can be opened. Local files and private network addresses are refused.',
-  '- Nobody can see the browser window. If a site needs a human to log in, solve a CAPTCHA or pass a "verify you are human" check, call browser_request_human and give the person the link instead of guessing credentials or trying to solve it.',
+  '- Nobody can see the browser window. If a site needs a human to log in, solve a CAPTCHA or pass a "verify you are human" check, call browser_request_human and give the person the link instead of guessing credentials or trying to solve it. Keep that tab open (no browser_close, no navigating away) until the person says they are done.',
   '- Logins (cookies) are kept for you between sessions.',
 ];
 

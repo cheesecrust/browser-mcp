@@ -533,6 +533,7 @@ function viewerPage(reason: string | undefined): string {
 <header>
   <h1>브라우저 직접 조작</h1>
   <span class="status" id="status">연결 중…</span>
+  <span class="status" id="pageUrl"></span>
   <button class="primary" id="done">완료 (AI에게 돌려주기)</button>
   ${reasonHtml}
 </header>
@@ -554,7 +555,7 @@ function viewerPage(reason: string | undefined): string {
   const base = location.pathname.replace(/\\/+$/, '');
   const $ = (id) => document.getElementById(id);
   const screen = $('screen'), frame = $('frame'), placeholder = $('placeholder'), status = $('status');
-  const overlay = $('overlay'), dialogMessage = $('dialogMessage'), dialogText = $('dialogText'), ime = $('ime');
+  const overlay = $('overlay'), dialogMessage = $('dialogMessage'), dialogText = $('dialogText'), ime = $('ime'), pageUrl = $('pageUrl');
   let state = 'active', expiresAt = 0, queue = [], sending = false, lastMove = 0, dialogOpen = false;
 
   const post = (path, body) => fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -666,11 +667,17 @@ function viewerPage(reason: string | undefined): string {
   const connect = () => {
     const es = new EventSource(base + '/stream');
     es.addEventListener('frame', (e) => {
-      frame.src = 'data:image/jpeg;base64,' + e.data; frame.hidden = false; placeholder.hidden = true;
+      frame.src = 'data:image/jpeg;base64,' + e.data;
+      if (placeholder.textContent.indexOf('열린 페이지가 없습니다') === 0) return;
+      frame.hidden = false; placeholder.hidden = true;
     });
     es.addEventListener('status', (e) => {
       const s = JSON.parse(e.data);
       expiresAt = s.expiresAt; tick();
+      const blank = !s.url || s.url === 'about:blank';
+      pageUrl.textContent = blank ? '' : s.url.length > 80 ? s.url.slice(0, 80) + '…' : s.url;
+      if (blank) { placeholder.textContent = '열린 페이지가 없습니다. AI에게 페이지를 먼저 열어 달라고 한 뒤 새 링크를 받으세요.'; placeholder.hidden = false; frame.hidden = true; }
+      else if (frame.hidden) placeholder.textContent = '화면을 불러오는 중입니다…';
       dialogOpen = Boolean(s.dialog);
       overlay.classList.toggle('show', dialogOpen);
       if (s.dialog) { dialogMessage.textContent = (s.dialog.type === 'beforeunload' ? '페이지를 떠나시겠습니까?' : s.dialog.message || '(메시지 없음)'); dialogText.hidden = s.dialog.type !== 'prompt'; $('dialogCancel').hidden = s.dialog.type === 'alert'; }

@@ -220,8 +220,15 @@ async function main(): Promise<void> {
     ) as { x: number; y: number; width: number; height: number };
     const viewport = { width: 1280, height: 720 };
     const at = { x: (box.x + box.width / 2) / viewport.width, y: (box.y + box.height / 2) / viewport.height };
+    const blankTab = await alice.call('browser_tabs', { action: 'new' });
+    assert.equal(blankTab.isError, false, blankTab.text);
+    const blankHandoff = await alice.call('browser_request_human', {});
+    assert.equal(blankHandoff.isError, true, 'a blank tab is refused');
+    assert.match(blankHandoff.text, /blank/);
+    assert.equal((await alice.call('browser_tabs', { action: 'close' })).isError, false);
     const handoff = await alice.call('browser_request_human', { reason: 'Type something for the test', minutes: 2 });
     assert.equal(handoff.isError, false, handoff.text);
+    assert.match(handoff.text, /currently: "Fixture Home"/);
     const link = /https?:\/\/\S+\/view\/[A-Za-z0-9_-]+/.exec(handoff.text)?.[0];
     assert.ok(link, `link in the tool result:\n${handoff.text}`);
     const sameLink = await alice.call('browser_request_human', {});
