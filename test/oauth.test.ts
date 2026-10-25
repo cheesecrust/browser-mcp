@@ -402,7 +402,7 @@ async function main(): Promise<void> {
     kakao.setUser({ id: 1001, nickname: 'Alice' });
     const alice = new TestProvider(callback.url);
     const { client: aliceClient } = await loginWithSdk(mcpUrl, alice, callback);
-    assert.equal((await aliceClient.listTools()).tools.length, 22);
+    assert.equal((await aliceClient.listTools()).tools.length, 23);
     const nav = (await aliceClient.callTool({ name: 'browser_navigate', arguments: { url: fixture.baseUrl } })) as { isError?: boolean };
     assert.equal(nav.isError, undefined, 'navigation succeeded');
     assert.ok(alice.storedTokens?.access_token && alice.storedTokens.refresh_token, 'tokens were issued');
@@ -426,7 +426,7 @@ async function main(): Promise<void> {
     const liteTransport = new StreamableHTTPClientTransport(new URL(`${mcpUrl}/lite`), { authProvider: aliceLite });
     const liteProbe = new Client({ name: 'browser-mcp-oauth-test', version: '0.0.0' });
     await liteProbe.connect(liteTransport);
-    assert.equal((await liteProbe.listTools()).tools.length, 14);
+    assert.equal((await liteProbe.listTools()).tools.length, 15);
     // ...and the first tool call is what sends the client through Kakao Login.
     await assert.rejects(
       liteProbe.callTool({ name: 'browser_tabs', arguments: { action: 'list' } }),
@@ -498,7 +498,7 @@ async function main(): Promise<void> {
     kakao.setUser({ id: 3003, nickname: 'Bob', email: 'Bob@Example.com' });
     const bob = new TestProvider(callback.url);
     const { client: bobClient } = await loginWithSdk(mcpUrl, bob, callback);
-    assert.equal((await bobClient.listTools()).tools.length, 22);
+    assert.equal((await bobClient.listTools()).tools.length, 23);
     await bobClient.close();
     await readFile(path.join(dataDir, 'users', 'kakao-3003', 'profile.json'), 'utf8');
 

@@ -412,6 +412,11 @@ export class BrowserSession {
     return this.tabs().indexOf(page);
   }
 
+  /** The active tab when the browser is running and has one; never launches anything. */
+  currentPage(): Page | undefined {
+    return this.activePage && !this.activePage.isClosed() ? this.activePage : undefined;
+  }
+
   /** The active tab, launching the browser and opening a blank tab when needed. */
   async page(): Promise<Page> {
     const context = await this.ensureContext();

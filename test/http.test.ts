@@ -144,7 +144,7 @@ async function main(): Promise<void> {
     step('an authenticated client gets the full tool set and remote instructions');
     let alice = await connect(a.url, ALICE);
     const tools = await alice.client.listTools();
-    assert.equal(tools.tools.length, 22);
+    assert.equal(tools.tools.length, 23);
     assert.match(alice.client.getInstructions() ?? '', /shared remote server/);
     assert.ok(alice.transport.sessionId, 'server assigned a session id');
 
@@ -195,7 +195,7 @@ async function main(): Promise<void> {
     const lite = await connect(`${a.url}/lite`, ALICE);
     const liteTools = (await lite.client.listTools()).tools;
     const liteNames = liteTools.map((tool) => tool.name);
-    assert.equal(liteNames.length, 14);
+    assert.equal(liteNames.length, 15);
     assert.ok(liteNames.includes('browser_click') && liteNames.includes('browser_navigate'));
     assert.ok(!liteNames.includes('browser_screenshot') && !liteNames.includes('browser_evaluate') && !liteNames.includes('browser_file_upload'));
     assert.ok(
@@ -208,6 +208,76 @@ async function main(): Promise<void> {
     await lite.transport.terminateSession();
     await waitFor(async () => (await health(a.url)).sessions === 2, 10_000, 'lite session to close');
 
+    step('browser_request_human hands the live browser to a person through a link');
+    const home = await alice.call('browser_navigate', { url: fixture.baseUrl });
+    assert.equal(home.isError, false, home.text);
+    const box = JSON.parse(
+      (
+        await alice.call('browser_evaluate', {
+          expression: '(() => { const r = document.getElementById("q").getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()',
+        })
+      ).text.match(/\{[\s\S]*\}/)?.[0] ?? '{}',
+    ) as { x: number; y: number; width: number; height: number };
+    const viewport = { width: 1280, height: 720 };
+    const at = { x: (box.x + box.width / 2) / viewport.width, y: (box.y + box.height / 2) / viewport.height };
+    const handoff = await alice.call('browser_request_human', { reason: 'Type something for the test', minutes: 2 });
+    assert.equal(handoff.isError, false, handoff.text);
+    const link = /https?:\/\/\S+\/view\/[A-Za-z0-9_-]+/.exec(handoff.text)?.[0];
+    assert.ok(link, `link in the tool result:\n${handoff.text}`);
+    const sameLink = await alice.call('browser_request_human', {});
+    assert.ok(sameLink.text.includes(link) && /already active/.test(sameLink.text), 'the same link is returned while it is active');
+
+    const viewer = await fetch(link);
+    assert.equal(viewer.status, 200);
+    assert.match(viewer.headers.get('content-type') ?? '', /text\/html/);
+    assert.match(await viewer.text(), /완료/);
+    assert.equal((await fetch(`${a.url.replace(/\/mcp$/, '')}/view/${'x'.repeat(32)}`)).status, 404);
+
+    const abort = new AbortController();
+    const stream = await fetch(`${link}/stream`, { signal: abort.signal });
+    assert.equal(stream.status, 200);
+    assert.match(stream.headers.get('content-type') ?? '', /text\/event-stream/);
+    const reader = stream.body!.getReader();
+    let received = '';
+    const frameDeadline = setTimeout(() => abort.abort(), 20_000);
+    while (!/event: frame\ndata: [A-Za-z0-9+/]{100,}/.test(received)) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      received += Buffer.from(value).toString('latin1');
+    }
+    clearTimeout(frameDeadline);
+    abort.abort();
+    assert.match(received, /event: status\ndata: \{"state":"active"/, 'the status arrives first');
+    assert.match(received, /event: frame\n/, 'a screen frame arrived');
+
+    const typed = await fetch(`${link}/input`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        events: [
+          { t: 'down', x: at.x, y: at.y, button: 'left' },
+          { t: 'up', x: at.x, y: at.y, button: 'left' },
+          { t: 'text', text: 'from human' },
+          { t: 'key', key: 'Enter' },
+          { t: 'bogus' },
+        ],
+      }),
+    });
+    assert.equal(typed.status, 200);
+    assert.deepEqual(await typed.json(), { applied: 4 });
+    await waitFor(async () => /You searched for: from human/.test((await alice.call('browser_get_text', {})).text), 10_000, "the person's input to reach the page");
+
+    const done = await fetch(`${link}/done`, { method: 'POST' });
+    assert.equal(done.status, 200);
+    assert.deepEqual(await done.json(), { state: 'finished' });
+    assert.equal((await fetch(link)).status, 410, 'a finished link no longer opens');
+    assert.equal((await fetch(`${link}/input`, { method: 'POST', body: '{}' })).status, 200);
+    assert.deepEqual(await (await fetch(`${link}/input`, { method: 'POST', body: '{}' })).json(), { applied: 0, note: 'This hand-over has ended.' });
+    const after = await alice.call('browser_request_human', {});
+    assert.match(after.text, /finished the previous hand-over/);
+    assert.ok(!after.text.includes(link), 'a new link is issued after the previous one finished');
+    assert.equal((await alice.call('browser_navigate', { url: fixture.baseUrl })).isError, false, 'back on the fixture home for the next steps');
+
     step('/mcp/lite answers tool discovery without a token, in plain JSON, but refuses tool calls');
     const rpc = (method: string, params?: unknown): string => JSON.stringify({ jsonrpc: '2.0', id: 1, method, params });
     const anonymousPost = (url: string, payload: string): Promise<Response> =>
@@ -216,7 +286,7 @@ async function main(): Promise<void> {
     assert.equal(anonList.status, 200);
     assert.match(anonList.headers.get('content-type') ?? '', /application\/json/);
     const anonTools = (await anonList.json()) as { result?: { tools?: Array<{ name: string }> } };
-    assert.equal(anonTools.result?.tools?.length, 14);
+    assert.equal(anonTools.result?.tools?.length, 15);
     const anonInit = await anonymousPost(
       `${a.url}/lite`,
       rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'anonymous', version: '0' } }),
@@ -226,7 +296,7 @@ async function main(): Promise<void> {
     const anonCall = await anonymousPost(`${a.url}/lite`, rpc('tools/call', { name: 'browser_tabs', arguments: { action: 'list' } }));
     assert.equal(anonCall.status, 401);
     assert.equal((await anonymousPost(a.url, rpc('tools/list'))).status, 401, 'the full endpoint still needs a token');
-    for (const headers of [{ authorization: ALICE }, { 'x-api-key': ALICE }]) {
+    for (const headers of [{ authorization: ALICE }, { 'x-api-key': ALICE }] as Record<string, string>[]) {
       const keyed = await fetch(a.url, {
         method: 'POST',
         headers: { 'content-type': 'application/json', accept: 'application/json', ...headers },
@@ -355,7 +425,7 @@ async function main(): Promise<void> {
 
     step('an unauthenticated loopback server accepts local clients');
     const local = await connect(d.url);
-    assert.equal((await local.client.listTools()).tools.length, 22);
+    assert.equal((await local.client.listTools()).tools.length, 23);
     const localNavigate = await local.call('browser_navigate', { url: fixture.baseUrl });
     assert.equal(localNavigate.isError, false, localNavigate.text);
     await local.client.close().catch(() => undefined);

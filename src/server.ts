@@ -1,7 +1,9 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import type { BrowserSession } from './browser.js';
 import { VERSION } from './config.js';
+import type { HandoffBroker } from './handoff.js';
 import { createRegistrar, type RegistrarHooks, type ToolRegistrar } from './tools/common.js';
+import { registerHandoffTools } from './tools/handoff.js';
 import { registerInspectionTools } from './tools/inspect.js';
 import { registerInteractionTools } from './tools/interact.js';
 import { registerNavigationTools } from './tools/navigation.js';
@@ -31,12 +33,13 @@ export const LITE_TOOLS: ReadonlySet<string> = new Set([
   'browser_handle_dialog',
   'browser_tabs',
   'browser_close',
+  'browser_request_human',
 ]);
 
 const REMOTE_NOTES = [
   'This browser runs on a shared remote server:',
   '- Only public web sites can be opened. Local files and private network addresses are refused.',
-  '- Nobody can see the browser window. If a site needs a human to log in or solve a challenge, say so instead of guessing credentials.',
+  '- Nobody can see the browser window. If a site needs a human to log in, solve a CAPTCHA or pass a "verify you are human" check, call browser_request_human and give the person the link instead of guessing credentials or trying to solve it.',
   '- Logins (cookies) are kept for you between sessions.',
 ];
 
@@ -71,6 +74,8 @@ export interface ServerOptions extends RegistrarHooks {
   remote?: boolean;
   /** Tool set to expose (default: full). */
   profile?: ToolProfile;
+  /** Enables browser_request_human (remote mode only: the person needs an HTTP endpoint to look at). */
+  handoff?: HandoffBroker;
 }
 
 export function createServer(session: BrowserSession, options: ServerOptions = {}): McpServer {
@@ -85,5 +90,6 @@ export function createServer(session: BrowserSession, options: ServerOptions = {
   registerInspectionTools(tool);
   registerInteractionTools(tool);
   registerTabTools(tool);
+  if (options.handoff) registerHandoffTools(tool, options.handoff);
   return server;
 }

@@ -89,6 +89,7 @@ claude mcp add --scope user browser -- node /path/to/browser-mcp/dist/index.js -
 | `browser_console_messages` | 콘솔 출력과 처리되지 않은 에러 조회 |
 | `browser_network_requests` | 네트워크 요청 목록 조회 |
 | `browser_close` | 브라우저 종료 (다음 호출 시 자동 재실행) |
+| `browser_request_human` | (원격 모드) 사람이 직접 조작할 수 있는 링크 발급: 로그인, 보안 문자 등 |
 
 ### 동작 방식 메모
 
@@ -223,8 +224,8 @@ ChatGPT 웹과 Claude.ai의 커스텀 커넥터는 OAuth 서버를 요구하므�
 
 | 엔드포인트 | 툴 | 용도 |
 |---|---|---|
-| `https://<호스트>/mcp` | 22개 전체 | Claude Code, Codex, Cursor 같은 코딩 에이전트 |
-| `https://<호스트>/mcp/lite` | 14개 (스크린샷·스크립트 실행·파일 업로드·콘솔/네트워크 조회 제외) | PlayMCP 등 채팅 UI |
+| `https://<호스트>/mcp` | 23개 전체 | Claude Code, Codex, Cursor 같은 코딩 에이전트 |
+| `https://<호스트>/mcp/lite` | 15개 (스크린샷·스크립트 실행·파일 업로드·콘솔/네트워크 조회 제외) | PlayMCP 등 채팅 UI |
 
 두 주소는 같은 카카오 로그인과 같은 브라우저를 씁니다. 세션 ID 없이 들어온 `tools/call`도 그 사용자의 브라우저로 처리되므로, 세션을 유지하지 않는 게이트웨이에서도 대화가 이어지는 동안 같은 탭을 계속 다룹니다. `/mcp/lite`는 토큰 없는 `initialize`, `tools/list`, `ping`에도 답하므로 콘솔의 **정보 불러오기**가 로그인 전에 통과하고, 도구 실행(`tools/call`)만 카카오 로그인이 필요합니다. `Accept`에 `text/event-stream`이 없는 단순한 클라이언트에는 이벤트 스트림 대신 JSON으로 응답합니다.
 
@@ -235,7 +236,7 @@ ChatGPT 웹과 Claude.ai의 커스텀 커넥터는 OAuth 서버를 요구하므�
    ```
    BROWSER_MCP_OAUTH_CLIENTS=playmcp:<비밀값>
    ```
-3. PlayMCP 개발자 콘솔에서 **새로운 MCP 서버 등록**: 식별자(영문·숫자만, `kakao` 포함 불가), 엔드포인트 URL `https://<호스트>/mcp/lite`를 넣고 **정보 불러오기**로 툴 14개가 보이는지 확인합니다. 인증 방식은 OAuth를 고르고 아래처럼 채운 뒤 **임시 등록**합니다.
+3. PlayMCP 개발자 콘솔에서 **새로운 MCP 서버 등록**: 식별자(영문·숫자만, `kakao` 포함 불가), 엔드포인트 URL `https://<호스트>/mcp/lite`를 넣고 **정보 불러오기**로 툴 15개가 보이는지 확인합니다. 인증 방식은 OAuth를 고르고 아래처럼 채운 뒤 **임시 등록**합니다.
 
    | 항목 | 값 |
    |---|---|
@@ -258,7 +259,7 @@ ChatGPT 웹과 Claude.ai의 커스텀 커넥터는 OAuth 서버를 요구하므�
 - **브라우저와 세션**: 사용자마다 브라우저 하나가 뜨고, 그 사용자의 MCP 세션과 세션 없는 요청이 모두 같은 브라우저를 씁니다. 도구 호출이 없는 채로 `--idle-timeout`(기본 15분)이 지나면 브라우저가 닫히고(로그인 상태는 저장) 다음 호출 때 다시 뜹니다. 동시에 뜨는 브라우저는 `--max-sessions`(기본 20)개까지이고, 사용자당 MCP 세션은 `--max-sessions-per-user`(기본 10)개를 넘으면 가장 오래 쉰 세션부터 닫힙니다. 클라이언트는 `DELETE /mcp`로 세션을 바로 끝낼 수 있습니다.
 - **사용자별 데이터**: `<data-dir>/users/<user>/`에 `storage-state.json`(로그인 상태), `downloads/`, `files/`(업로드용), `screenshots/`가 생깁니다. `browser_file_upload`의 경로와 `browser_screenshot`의 `savePath`는 이 안으로 제한되며 상대 경로로 씁니다.
 - **네트워크 정책**: 기본으로 공개 웹 사이트만 열 수 있습니다. `file://`, `chrome://`, `localhost`, 사설 IP 대역, 링크로컬(클라우드 메타데이터 주소 포함), 사설 IP로 풀리는 도메인은 페이지 이동뿐 아니라 페이지 안의 하위 요청까지 차단됩니다. 사내망 사이트를 다뤄야 하면 `--allow-private-network`를 주세요.
-- **로그인**: 서버에는 화면이 없어서 사람이 직접 로그인할 수 없습니다. 2단계 인증이나 SSO가 필요한 사이트는 로컬에서 로그인한 뒤 Playwright storage state 파일을 `<data-dir>/users/<user>/storage-state.json`으로 복사하면 그 상태로 시작합니다. 화면을 넘겨받아 직접 로그인하는 기능은 다음 단계입니다.
+- **사람에게 넘기기**: 로그인, 2단계 인증, 보안 문자(CAPTCHA)처럼 AI가 대신 해서는 안 되는 단계는 `browser_request_human`으로 처리합니다. 도구가 `https://<호스트>/view/<임의 코드>` 링크를 돌려주면 사람이 그 링크를 열어 서버 브라우저의 화면을 실시간으로 보면서 마우스와 키보드로 직접 조작하고, **완료**를 누르면 AI가 같은 브라우저로 이어서 진행합니다. 링크는 토큰 없이 열리지만 해당 사용자의 브라우저에만 연결되고 기본 10분(최대 30분) 뒤나 완료 시점에 만료됩니다. 로그인 상태는 평소처럼 사용자 데이터에 저장되므로 다음 호출부터는 사람이 다시 개입할 필요가 없습니다. 화면은 Chromium의 screencast(다른 엔진은 스크린샷 폴링)를 Server-Sent Events로 보내고, 입력은 작은 JSON 요청으로 돌아옵니다. 미리 로그인해 두려면 로컬에서 로그인한 뒤 Playwright storage state 파일을 `<data-dir>/users/<user>/storage-state.json`으로 복사해도 됩니다.
 - **로그**: 도구 호출마다 `user=… session=… tool=… ok=… ms=… url=…` 한 줄이 stderr에 남습니다.
 - **프로토콜**: Streamable HTTP입니다. `initialize`로 세션(`Mcp-Session-Id`)을 여는 클라이언트(Claude Code, Codex, Cursor, OpenAI Responses API)와, 세션 없이 요청마다 `tools/call`만 보내는 게이트웨이(PlayMCP 등) 모두 지원합니다.
 
@@ -333,6 +334,7 @@ src/
   index.ts          CLI 진입점, stdio 또는 HTTP 모드 선택, 종료 처리
   config.ts         플래그/환경 변수 파싱
   http.ts           HTTP 모드: 인증, 세션별 브라우저, 유휴 정리, /healthz, OAuth 엔드포인트
+  handoff.ts        사람에게 넘기기: /view/<code> 뷰어 페이지, 화면 스트리밍, 입력 전달
   oauth.ts          카카오 로그인을 신원 확인으로 쓰는 OAuth 2.1 인증 서버 (등록, 인가, 토큰, 폐기)
   auth.ts           고정 토큰 파일/환경 변수 파싱과 Bearer 검증
   policy.ts         네트워크 정책: 차단 스킴, 사설 IP 판정, DNS 확인
@@ -342,6 +344,7 @@ src/
   tools/
     common.ts       도구 등록 헬퍼, 직렬화 뮤텍스, 공통 결과 포맷
     navigation.ts   navigate / back / forward
+    handoff.ts      request_human (사람에게 넘기기 링크)
     inspect.ts      snapshot / screenshot / get_text / evaluate / console / network
     interact.ts     click / type / press_key / hover / select / scroll / drag / upload / wait_for / dialog
     tabs.ts         tabs / resize / close

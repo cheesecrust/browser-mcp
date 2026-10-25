@@ -7,6 +7,7 @@ import type { AuthInfo } from '@modelcontextprotocol/server';
 import { TokenStore } from './auth.js';
 import { BrowserSession, type Workspace } from './browser.js';
 import type { Config } from './config.js';
+import { HandoffManager } from './handoff.js';
 import { log } from './log.js';
 import { OAuthServer, type OAuthOutcome } from './oauth.js';
 import { UrlGuard } from './policy.js';
@@ -68,6 +69,8 @@ export interface HttpServerHandle {
 class Registry {
   private readonly users = new Map<string, UserEntry>();
   private readonly sessions = new Map<string, SessionEntry>();
+
+  constructor(private readonly handoffs: HandoffManager) {}
 
   get sessionCount(): number {
     return this.sessions.size;
@@ -142,6 +145,7 @@ class Registry {
   async closeBrowser(entry: UserEntry, reason: string): Promise<void> {
     if (entry.browser.running) {
       log(`browser of ${entry.user} closed: ${reason}`);
+      await this.handoffs.closeFor(entry.browser);
       await entry.browser.mutex.run(() => entry.browser.close());
     }
     if (entry.sessions.size === 0 && this.users.get(entry.user) === entry) this.users.delete(entry.user);
@@ -285,7 +289,8 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
     : undefined;
   const unauthenticated = tokens.size === 0 && !oauth;
   const guard = config.allowPrivateNetwork ? undefined : new UrlGuard();
-  const registry = new Registry();
+  const handoffs = new HandoffManager({ publicUrl: config.publicUrl });
+  const registry = new Registry(handoffs);
   const creating = new Map<string, Promise<UserEntry | undefined>>();
   const validateHost = localhostHostValidation();
   const validateOrigin = localhostOriginValidation();
@@ -331,6 +336,15 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
     } finally {
       creating.delete(user);
     }
+  }
+
+  /** The origin the caller reached us at, for links handed to people (behind Caddy: the forwarded scheme and host). */
+  function originOf(req: IncomingMessage): string {
+    const forwardedProto = req.headers['x-forwarded-proto'];
+    const proto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto)?.split(',')[0]?.trim() || 'http';
+    const forwardedHost = req.headers['x-forwarded-host'];
+    const host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost)?.split(',')[0]?.trim() || req.headers.host || 'localhost';
+    return `${proto}://${host}`;
   }
 
   function toolCallLogger(entry: UserEntry, sessionLabel: () => string): (info: ToolCallInfo) => void {
@@ -407,7 +421,12 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
     });
     entry.transport = transport;
 
-    const mcp = createServer(user.browser, { remote: true, profile, onToolCall: toolCallLogger(user, () => short(entry.id)) });
+    const mcp = createServer(user.browser, {
+      remote: true,
+      profile,
+      onToolCall: toolCallLogger(user, () => short(entry.id)),
+      handoff: handoffs.brokerFor(user.user, user.browser, originOf(req)),
+    });
     mcp.server.onclose = () => {
       if (entry.id) void registry.closeSession(entry.id, 'transport closed');
     };
@@ -434,7 +453,12 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
       return;
     }
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: negotiateJson(req) });
-    const mcp = createServer(user.browser, { remote: true, profile, onToolCall: toolCallLogger(user, () => 'none') });
+    const mcp = createServer(user.browser, {
+      remote: true,
+      profile,
+      onToolCall: toolCallLogger(user, () => 'none'),
+      handoff: handoffs.brokerFor(user.user, user.browser, originOf(req)),
+    });
     await mcp.connect(transport);
     res.once('close', () => void transport.close().catch(() => undefined));
     withAuth(req, authInfo);
@@ -448,7 +472,9 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
    */
   async function serveDiscovery(profile: ToolProfile, req: IncomingMessage, res: ServerResponse, body: unknown): Promise<void> {
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: negotiateJson(req) });
-    const mcp = createServer(new BrowserSession(config, { guard }), { remote: true, profile });
+    // The catalogue must match what a logged-in user gets, so the hand-over tool is listed too (it never runs here).
+    const probe = new BrowserSession(config, { guard });
+    const mcp = createServer(probe, { remote: true, profile, handoff: handoffs.brokerFor('anonymous', probe, originOf(req)) });
     await mcp.connect(transport);
     res.once('close', () => void transport.close().catch(() => undefined));
     await transport.handleRequest(req, res, body);
@@ -525,6 +551,8 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
       return;
     }
     if (await handleOAuth(pathname, req, res, url)) return;
+    // Hand-over pages are reached by people with a link, not by MCP clients with a token.
+    if (await handoffs.handle(pathname, req, res)) return;
     const profile = PROFILES[pathname];
     if (!profile) {
       sendJson(res, 404, { error: 'not found' });
@@ -622,6 +650,7 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
     close: () => {
       closing ??= (async () => {
         clearInterval(sweeper);
+        await handoffs.close();
         await registry.closeAll('server shutting down');
         if (oauth) await oauth.close();
         server.closeAllConnections();
