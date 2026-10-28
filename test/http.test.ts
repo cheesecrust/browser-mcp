@@ -493,6 +493,14 @@ async function main(): Promise<void> {
     let e = await startServer(['--issue-tokens', '--admin-token', ADMIN, '--allow-private-network', '--data-dir', dataDir('e')], {});
     servers.push(e);
 
+    step('a browser gets the token page without the admin secret; the API still needs it');
+    const page = await fetch(new URL('/tokens', e.url), { headers: { accept: 'text/html,application/xhtml+xml,*/*;q=0.8' } });
+    assert.equal(page.status, 200);
+    assert.match(page.headers.get('content-type') ?? '', /text\/html/);
+    assert.match(await page.text(), /<title>토큰 발급<\/title>/);
+    const jsonNoAdmin = await fetch(new URL('/tokens', e.url), { headers: { accept: 'application/json' } });
+    assert.equal(jsonNoAdmin.status, 401);
+
     step('issuing tokens needs the admin secret');
     const noAdmin = await fetch(new URL('/tokens', e.url), { method: 'POST' });
     assert.equal(noAdmin.status, 401);

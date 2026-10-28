@@ -9,6 +9,7 @@ import { BrowserSession, type Workspace } from './browser.js';
 import type { Config } from './config.js';
 import { HandoffManager } from './handoff.js';
 import { IssueError, IssuedTokenStore } from './issued.js';
+import { tokensPage } from './tokens-page.js';
 import { log } from './log.js';
 import { SecretLinkManager, Vault } from './vault.js';
 import { OAuthServer, type OAuthOutcome } from './oauth.js';
@@ -164,6 +165,12 @@ const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-methods': 'GET, POST, OPTIONS',
   'access-control-allow-headers': 'content-type, authorization, x-api-key, mcp-protocol-version',
 };
+
+/** True when the client is a browser navigating to the page rather than a script asking for JSON. */
+function wantsHtml(req: IncomingMessage): boolean {
+  const accept = req.headers.accept ?? '';
+  return accept.includes('text/html') && (accept.indexOf('text/html') < accept.indexOf('application/json') || !accept.includes('application/json'));
+}
 
 /** The token of an Authorization header: "Bearer <token>" or a bare value (gateways with fixed header forms). */
 function bearerOf(authorization: string | undefined): string | undefined {
@@ -401,11 +408,17 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
   async function handleTokens(pathname: string, req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     if (!issued) return false;
     if (pathname !== '/tokens' && !pathname.startsWith('/tokens/')) return false;
+    const method = req.method ?? 'GET';
+    // A browser opening /tokens gets the page; it holds no secrets and calls the JSON API below.
+    if (pathname === '/tokens' && method === 'GET' && !req.headers.authorization && wantsHtml(req)) {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(tokensPage());
+      return true;
+    }
     if (!isAdmin(req.headers.authorization)) {
       sendJson(res, 401, { error: 'unauthorized' }, { 'www-authenticate': 'Bearer realm="browser-mcp-admin"' });
       return true;
     }
-    const method = req.method ?? 'GET';
     try {
       if (pathname === '/tokens' && method === 'POST') {
         const body = (await readBody(req)) as Record<string, unknown> | URLSearchParams;

@@ -148,7 +148,7 @@ node dist/index.js --http --host 0.0.0.0 --tokens-file tokens.json
 ```
 
 HTTP 모드는 항상 헤드리스이며, 카카오 로그인도 토큰도 없이는 127.0.0.1에서만(`--allow-unauthenticated`) 뜹니다.
-토큰을 미리 파일에 적어 두는 대신 서버가 발급하게 할 수도 있습니다. `--issue-tokens`를 켜면 `POST /tokens`가 겹치지 않는 임의 토큰을 만들어 돌려주고, `GET /tokens`로 지금까지 발급한 토큰을 다시 볼 수 있습니다. 발급 내역은 `<data-dir>/issued-tokens.json`(0600)에 토큰 원문째 저장되므로 이 파일과 관리자 비밀은 샌드박스 밖으로 내보내지 마세요. 발급된 토큰만 통과하며, 토큰마다 별도 사용자(워크스페이스·세션)가 됩니다.
+토큰을 미리 파일에 적어 두는 대신 서버가 발급하게 할 수도 있습니다. `--issue-tokens`를 켜면 브라우저로 `https://<호스트>/tokens`를 열어 토큰을 발급·복사·회수할 수 있는 페이지가 나오고, 같은 주소가 스크립트용 JSON API이기도 합니다. `POST /tokens`가 겹치지 않는 임의 토큰을 만들어 돌려주고, `GET /tokens`로 지금까지 발급한 토큰을 다시 볼 수 있습니다. 발급 내역은 `<data-dir>/issued-tokens.json`(0600)에 토큰 원문째 저장되므로 이 파일과 관리자 비밀은 샌드박스 밖으로 내보내지 마세요. 발급된 토큰만 통과하며, 토큰마다 별도 사용자(워크스페이스·세션)가 됩니다.
 
 ```bash
 node dist/index.js --http --host 0.0.0.0 --issue-tokens --admin-token <16자 이상 비밀>
@@ -313,7 +313,7 @@ ChatGPT 웹과 Claude.ai의 커스텀 커넥터는 OAuth 서버를 요구하므�
 | `--port <port>` | `BROWSER_MCP_PORT` | `3000` | 수신 포트 (`0`이면 빈 포트) |
 | `--tokens-file <file>` | `BROWSER_MCP_TOKENS_FILE` | | 토큰→사용자 JSON 파일. 환경 변수 `BROWSER_MCP_TOKENS`(`token:user,...`)로도 지정 |
 | `--allow-unauthenticated` | `BROWSER_MCP_ALLOW_UNAUTHENTICATED` | off | 토큰 없이 서비스 (127.0.0.1 전용) |
-| `--issue-tokens` | `BROWSER_MCP_ISSUE_TOKENS` | off | `POST /tokens`로 토큰 발급, `GET /tokens`로 조회. `<data-dir>/issued-tokens.json`에 저장됨 |
+| `--issue-tokens` | `BROWSER_MCP_ISSUE_TOKENS` | off | `/tokens` 페이지와 API로 토큰 발급·조회·회수. `<data-dir>/issued-tokens.json`에 저장됨 |
 | `--admin-token <secret>` | `BROWSER_MCP_ADMIN_TOKEN` | | `/tokens` 호출에 필요한 비밀(16자 이상). 없으면 엔드포인트가 열림 |
 | `--data-dir <dir>` | `BROWSER_MCP_DATA_DIR` | `~/.browser-mcp` | 사용자별 상태 디렉터리 |
 | `--idle-timeout <sec>` | `BROWSER_MCP_IDLE_TIMEOUT` | `900` | 유휴 세션 종료 시간 |
