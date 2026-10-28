@@ -2,7 +2,8 @@
  * The page a browser gets at GET /tokens: issue, list, copy and revoke server-issued
  * tokens. It is plain HTML that calls the JSON API of the same path, so it holds no
  * secrets itself; the admin secret (when the server has one) is typed into the page
- * and kept in sessionStorage of that browser tab only.
+ * and kept in sessionStorage of that browser tab only. A token is shown once, right
+ * after it is issued; the list only shows a short prefix of each.
  */
 
 const STYLE = `
@@ -74,6 +75,7 @@ export function tokensPage(): string {
   </section>
   <section id="issued" hidden>
     <h2>발급된 토큰</h2>
+    <p class="muted">토큰 값은 발급 직후에만 보여 주고 목록에는 앞부분만 표시합니다. 잃어버리면 회수하고 새로 발급하세요.</p>
     <ul id="list"><li class="muted">불러오는 중…</li></ul>
     <div class="msg" id="list-msg"></div>
   </section>
@@ -112,18 +114,16 @@ export function tokensPage(): string {
       const li = document.createElement('li');
       const grow = document.createElement('div'); grow.className = 'grow';
       const user = document.createElement('div'); user.className = 'user'; user.textContent = t.user;
-      const token = document.createElement('div'); token.className = 'token'; token.textContent = t.token || '(이 서버 버전에서는 토큰을 저장하지 않았습니다)';
+      const token = document.createElement('div'); token.className = 'token muted'; token.textContent = t.token ? t.token.slice(0, 10) + '…' : '';
       const when = document.createElement('div'); when.className = 'when'; when.textContent = new Date(t.createdAt).toLocaleString();
       grow.append(user, token, when);
-      const cp = document.createElement('button'); cp.className = 'small'; cp.textContent = '복사'; cp.disabled = !t.token;
-      cp.onclick = () => copy(t.token, cp);
       const del = document.createElement('button'); del.className = 'small danger'; del.textContent = '회수';
       del.onclick = async () => {
         if (!confirm('"' + t.user + '" 토큰을 회수할까요? 열린 브라우저와 세션이 닫힙니다.')) return;
         try { await call('DELETE', '/' + encodeURIComponent(t.user)); show('list-msg', '"' + t.user + '" 토큰을 회수했습니다.', 'ok'); await load(); }
         catch (err) { show('list-msg', err.message, 'err'); }
       };
-      li.append(grow, cp, del); list.append(li);
+      li.append(grow, del); list.append(li);
     }
   };
   const unlocked = (yes) => { $('admin').hidden = yes; $('issue').hidden = !yes; $('issued').hidden = !yes; };
@@ -151,7 +151,7 @@ export function tokensPage(): string {
       $('result-token').textContent = data.token;
       $('result-cmd').textContent = command(data.token);
       $('result').hidden = false;
-      show('issue-msg', '"' + data.user + '" 토큰을 발급했습니다. 아래 목록에서도 다시 볼 수 있습니다.', 'ok');
+      show('issue-msg', '"' + data.user + '" 토큰을 발급했습니다. 지금 복사해 두세요. 이 화면을 벗어나면 다시 볼 수 없습니다.', 'ok');
       await load();
     } catch (err) { show('issue-msg', err.message, 'err'); if (err.unauthorized) unlocked(false); }
   };
