@@ -148,6 +148,18 @@ node dist/index.js --http --host 0.0.0.0 --tokens-file tokens.json
 ```
 
 HTTP 모드는 항상 헤드리스이며, 카카오 로그인도 토큰도 없이는 127.0.0.1에서만(`--allow-unauthenticated`) 뜹니다.
+토큰을 미리 파일에 적어 두는 대신 서버가 발급하게 할 수도 있습니다. `--issue-tokens`를 켜면 `POST /tokens`가 겹치지 않는 임의 토큰을 만들어 돌려주고, `GET /tokens`로 지금까지 발급한 토큰을 다시 볼 수 있습니다. 발급 내역은 `<data-dir>/issued-tokens.json`(0600)에 토큰 원문째 저장되므로 이 파일과 관리자 비밀은 샌드박스 밖으로 내보내지 마세요. 발급된 토큰만 통과하며, 토큰마다 별도 사용자(워크스페이스·세션)가 됩니다.
+
+```bash
+node dist/index.js --http --host 0.0.0.0 --issue-tokens --admin-token <16자 이상 비밀>
+
+curl -X POST https://<호스트>/tokens -H "Authorization: Bearer <비밀>"                       # 이름 자동 (user-xxxx)
+curl -X POST https://<호스트>/tokens -H "Authorization: Bearer <비밀>" -H "content-type: application/json" -d '{"user":"alice"}'
+curl https://<호스트>/tokens -H "Authorization: Bearer <비밀>"                                 # 발급된 토큰 목록 {"tokens":[{"token","user","createdAt"}]}
+curl -X DELETE https://<호스트>/tokens/alice -H "Authorization: Bearer <비밀>"                 # 회수: 브라우저와 세션도 닫힘
+```
+
+`--admin-token`을 생략하면 `/tokens`가 누구에게나 열립니다(샌드박스용).
 토큰이 헤더로 오가므로 외부에 열 때는 반드시 HTTPS 리버스 프록시 뒤에 두세요. `GET /healthz`가 상태와 세션 수를 돌려줍니다.
 
 Docker로 올리려면:
@@ -166,7 +178,7 @@ docker compose --profile https up -d --build   # Caddy가 $DOMAIN 의 인증서�
 `deploy/lightsail-launch.sh`를 인스턴스 생성 화면의 **시작 스크립트**(Lightsail) 또는 **사용자 데이터**(EC2)에 붙여 넣으면,
 첫 부팅 때 Docker 설치, 저장소 복제, `.env` 작성, HTTPS 포함 실행까지 혼자 끝냅니다. 노트북에서 SSH를 열 일이 없습니다.
 
-1. 스크립트 위쪽의 설정값을 채웁니다: `DOMAIN`, `KAKAO_CLIENT_ID`, `KAKAO_CLIENT_SECRET`, `ALLOWED_USERS` (고정 토큰만 쓰면 `STATIC_TOKENS`).
+1. 스크립트 위쪽의 설정값을 채웁니다: `DOMAIN`, `KAKAO_CLIENT_ID`, `KAKAO_CLIENT_SECRET`, `ALLOWED_USERS` (고정 토큰만 쓰면 `STATIC_TOKENS`, 서버가 발급하게 하려면 `ISSUE_TOKENS="true"`와 `ADMIN_TOKEN`).
 2. Ubuntu 24.04, 4 GB 이상 플랜으로 인스턴스를 만들면서 스크립트를 붙여 넣습니다. 2 GB 플랜이면 스크립트가 스왑을 추가합니다.
 3. 고정 IP를 붙이고 도메인의 A 레코드를 그 IP로 설정합니다. 방화벽은 80, 443만 엽니다(SSH 규칙은 지우거나 Lightsail 브라우저 클라이언트로만 제한).
 4. Kakao Developers의 Redirect URI에 `https://<도메인>/oauth/kakao/callback`을 등록합니다.
@@ -183,6 +195,14 @@ nano setup.sh            # 위쪽 설정값 채우기
 sudo sh setup.sh
 ```
 `AUTO_UPDATE="true"`(기본)면 매시간 `deploy/update.sh`가 브랜치가 바뀌었을 때만 받아서 다시 빌드하므로, 코드 수정은 GitHub에 push하는 것으로 끝납니다.
+바로 반영하려면 브라우저 SSH에서 `sudo /opt/browser-mcp/deploy/update.sh`를 실행합니다.
+
+이미 떠 있는 인스턴스의 `.env`는 시작 스크립트가 다시 쓰지 않으므로, 설정을 바꿀 때는 `/opt/browser-mcp/.env`를 직접 고치고 재시작합니다:
+
+```bash
+sudo nano /opt/browser-mcp/.env                      # 예: BROWSER_MCP_ISSUE_TOKENS=1, BROWSER_MCP_ADMIN_TOKEN=... 추가
+cd /opt/browser-mcp && sudo docker compose --profile https up -d
+```
 
 ### 클라이언트 등록
 
@@ -293,6 +313,8 @@ ChatGPT 웹과 Claude.ai의 커스텀 커넥터는 OAuth 서버를 요구하므�
 | `--port <port>` | `BROWSER_MCP_PORT` | `3000` | 수신 포트 (`0`이면 빈 포트) |
 | `--tokens-file <file>` | `BROWSER_MCP_TOKENS_FILE` | | 토큰→사용자 JSON 파일. 환경 변수 `BROWSER_MCP_TOKENS`(`token:user,...`)로도 지정 |
 | `--allow-unauthenticated` | `BROWSER_MCP_ALLOW_UNAUTHENTICATED` | off | 토큰 없이 서비스 (127.0.0.1 전용) |
+| `--issue-tokens` | `BROWSER_MCP_ISSUE_TOKENS` | off | `POST /tokens`로 토큰 발급, `GET /tokens`로 조회. `<data-dir>/issued-tokens.json`에 저장됨 |
+| `--admin-token <secret>` | `BROWSER_MCP_ADMIN_TOKEN` | | `/tokens` 호출에 필요한 비밀(16자 이상). 없으면 엔드포인트가 열림 |
 | `--data-dir <dir>` | `BROWSER_MCP_DATA_DIR` | `~/.browser-mcp` | 사용자별 상태 디렉터리 |
 | `--idle-timeout <sec>` | `BROWSER_MCP_IDLE_TIMEOUT` | `900` | 유휴 세션 종료 시간 |
 | `--max-sessions <n>` | `BROWSER_MCP_MAX_SESSIONS` | `20` | 동시에 뜨는 브라우저 수(사용자당 하나) |

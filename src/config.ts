@@ -49,6 +49,10 @@ export interface Config {
   tokens: TokenEntry[];
   /** Run an HTTP server without tokens (only allowed on a loopback address). */
   allowUnauthenticated: boolean;
+  /** Serve POST /tokens so bearer tokens can be issued by the server and kept in <data-dir>/issued-tokens.json. */
+  issueTokens: boolean;
+  /** Secret that POST/GET/DELETE /tokens require; without it, the issuing endpoint is open (sandbox). */
+  adminToken?: string;
   /** Where per-user state lives in HTTP mode: storage state, downloads, uploads, screenshots. */
   dataDir: string;
   /** Sessions without tool calls for this long are closed, in milliseconds. */
@@ -128,6 +132,8 @@ Remote (HTTP) mode:
   --port <port>              Port to listen on (default: ${DEFAULTS.port}; 0 picks a free port)
   --tokens-file <file>       JSON file mapping bearer tokens to user names (see README)
   --allow-unauthenticated    Accept requests without a token (loopback address only)
+  --issue-tokens             Issue bearer tokens on demand via POST /tokens (kept in <data-dir>/issued-tokens.json)
+  --admin-token <secret>     Secret required to call /tokens (16+ characters; without it the endpoint is open)
   --data-dir <dir>           Per-user state directory (default: ~/.browser-mcp)
   --idle-timeout <seconds>   Close a user's browser and sessions idle for this long (default: ${DEFAULTS.idleTimeoutSeconds})
   --max-sessions <n>         Concurrent browsers, one per user (default: ${DEFAULTS.maxSessions})
@@ -225,6 +231,8 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
         port: { type: 'string' },
         'tokens-file': { type: 'string' },
         'allow-unauthenticated': { type: 'boolean' },
+        'issue-tokens': { type: 'boolean' },
+        'admin-token': { type: 'string' },
         'data-dir': { type: 'string' },
         'idle-timeout': { type: 'string' },
         'max-sessions': { type: 'string' },
@@ -305,6 +313,8 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
     port: portRaw ? parsePort(portRaw, '--port') : DEFAULTS.port,
     tokens: http ? loadTokens(str('tokens-file', 'TOKENS_FILE'), env.BROWSER_MCP_TOKENS) : [],
     allowUnauthenticated: bool('allow-unauthenticated', 'ALLOW_UNAUTHENTICATED') ?? false,
+    issueTokens: bool('issue-tokens', 'ISSUE_TOKENS') ?? false,
+    adminToken: str('admin-token', 'ADMIN_TOKEN'),
     dataDir: str('data-dir', 'DATA_DIR') ?? path.join(os.homedir(), '.browser-mcp'),
     idleTimeoutMs: (idleRaw ? parsePositiveInt(idleRaw, '--idle-timeout') : DEFAULTS.idleTimeoutSeconds) * 1_000,
     maxSessions: maxSessionsRaw ? parsePositiveInt(maxSessionsRaw, '--max-sessions') : DEFAULTS.maxSessions,
@@ -346,15 +356,19 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
         '--user-data-dir cannot be used with --http: every session gets its own browser, and logins are kept per user under --data-dir',
       );
     }
-    const hasAuth = config.tokens.length > 0 || config.kakaoClientId !== undefined;
+    const hasAuth = config.tokens.length > 0 || config.kakaoClientId !== undefined || config.issueTokens;
     if (!hasAuth && !config.allowUnauthenticated) {
       throw new ConfigError(
-        'HTTP mode needs a way to identify users: Kakao login (--kakao-client-id with --public-url) or static tokens (--tokens-file / BROWSER_MCP_TOKENS). ' +
-          'Pass --allow-unauthenticated only for a test server on 127.0.0.1',
+        'HTTP mode needs a way to identify users: Kakao login (--kakao-client-id with --public-url), static tokens (--tokens-file / BROWSER_MCP_TOKENS) ' +
+          'or server-issued tokens (--issue-tokens). Pass --allow-unauthenticated only for a test server on 127.0.0.1',
       );
     }
     if (!hasAuth && !isLoopbackHost(config.host)) {
       throw new ConfigError(`refusing to listen on ${config.host} without authentication; --allow-unauthenticated only works on a loopback address`);
+    }
+    if (config.adminToken !== undefined) {
+      if (!config.issueTokens) throw new ConfigError('--admin-token requires --issue-tokens');
+      if (config.adminToken.length < 16) throw new ConfigError('--admin-token must be at least 16 characters');
     }
     if (config.kakaoClientId) {
       if (!config.publicUrl) throw new ConfigError('--public-url is required with --kakao-client-id (clients are redirected back to it)');
@@ -373,8 +387,8 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
     } else if (config.kakaoClientSecret || config.kakaoScope || config.allowedUsers.length > 0 || config.oauthClients.length > 0) {
       throw new ConfigError('--kakao-client-secret, --kakao-scope, --allowed-users and --oauth-clients require --kakao-client-id');
     }
-  } else if (config.allowUnauthenticated || config.tokens.length > 0 || config.kakaoClientId) {
-    throw new ConfigError('--allow-unauthenticated, tokens and Kakao login only apply to --http mode');
+  } else if (config.allowUnauthenticated || config.issueTokens || config.adminToken || config.tokens.length > 0 || config.kakaoClientId) {
+    throw new ConfigError('--allow-unauthenticated, --issue-tokens, tokens and Kakao login only apply to --http mode');
   }
 
   return { kind: 'run', config };

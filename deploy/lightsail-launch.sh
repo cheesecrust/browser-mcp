@@ -23,6 +23,8 @@ KAKAO_CLIENT_SECRET=""                  # Kakao Developers > app > platform keys
 ALLOWED_USERS=""                        # Kakao user ids and/or e-mails, comma separated; "*" allows everyone
 KAKAO_SCOPE=""                          # e.g. "account_email" when allowing users by e-mail
 STATIC_TOKENS=""                        # optional "token:user,token2:user2" (16+ character random tokens)
+ISSUE_TOKENS="false"                    # "true": the server issues tokens via POST /tokens and lists them via GET /tokens
+ADMIN_TOKEN=""                          # secret (16+ characters) required to call /tokens; empty = open endpoint (sandbox only)
 OAUTH_CLIENTS=""                        # optional pre-registered OAuth clients for PlayMCP: "id:secret[:redirect_uri]"
 REPO_URL="https://github.com/cheesecrust/browser-mcp.git"
 BRANCH="main"
@@ -42,8 +44,12 @@ main() {
     echo "ERROR: set DOMAIN to your real host name before pasting the script"
     exit 1
   fi
-  if [ -z "$KAKAO_CLIENT_ID" ] && [ -z "$STATIC_TOKENS" ]; then
-    echo "ERROR: set KAKAO_CLIENT_ID (and KAKAO_CLIENT_SECRET) or STATIC_TOKENS, otherwise nobody can log in"
+  if [ -z "$KAKAO_CLIENT_ID" ] && [ -z "$STATIC_TOKENS" ] && [ "$ISSUE_TOKENS" != "true" ]; then
+    echo "ERROR: set KAKAO_CLIENT_ID (and KAKAO_CLIENT_SECRET), STATIC_TOKENS or ISSUE_TOKENS=true, otherwise nobody can log in"
+    exit 1
+  fi
+  if [ -n "$ADMIN_TOKEN" ] && [ "${#ADMIN_TOKEN}" -lt 16 ]; then
+    echo "ERROR: ADMIN_TOKEN must be at least 16 characters"
     exit 1
   fi
 
@@ -88,6 +94,8 @@ main() {
         [ -n "$ALLOWED_USERS" ] && echo "BROWSER_MCP_ALLOWED_USERS=$ALLOWED_USERS"
         [ -n "$KAKAO_SCOPE" ] && echo "BROWSER_MCP_KAKAO_SCOPE=$KAKAO_SCOPE"
         [ -n "$STATIC_TOKENS" ] && echo "BROWSER_MCP_TOKENS=$STATIC_TOKENS"
+        [ "$ISSUE_TOKENS" = "true" ] && echo "BROWSER_MCP_ISSUE_TOKENS=1"
+        [ -n "$ADMIN_TOKEN" ] && echo "BROWSER_MCP_ADMIN_TOKEN=$ADMIN_TOKEN"
         [ -n "$OAUTH_CLIENTS" ] && echo "BROWSER_MCP_OAUTH_CLIENTS=$OAUTH_CLIENTS"
         true
       } > "$APP_DIR/.env"

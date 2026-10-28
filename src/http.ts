@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import path from 'node:path';
@@ -8,6 +8,7 @@ import { TokenStore } from './auth.js';
 import { BrowserSession, type Workspace } from './browser.js';
 import type { Config } from './config.js';
 import { HandoffManager } from './handoff.js';
+import { IssueError, IssuedTokenStore } from './issued.js';
 import { log } from './log.js';
 import { SecretLinkManager, Vault } from './vault.js';
 import { OAuthServer, type OAuthOutcome } from './oauth.js';
@@ -164,6 +165,12 @@ const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-headers': 'content-type, authorization, x-api-key, mcp-protocol-version',
 };
 
+/** The token of an Authorization header: "Bearer <token>" or a bare value (gateways with fixed header forms). */
+function bearerOf(authorization: string | undefined): string | undefined {
+  const match = /^\s*(?:Bearer\s+)?(\S+)\s*$/i.exec(authorization ?? '');
+  return match?.[1];
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   res.writeHead(status, { 'content-type': 'application/json', ...headers });
   res.end(JSON.stringify(body));
@@ -288,7 +295,8 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
         clients: config.oauthClients,
       })
     : undefined;
-  const unauthenticated = tokens.size === 0 && !oauth;
+  const issued = config.issueTokens ? new IssuedTokenStore(path.join(config.dataDir, 'issued-tokens.json')) : undefined;
+  const unauthenticated = tokens.size === 0 && !oauth && !issued;
   const guard = config.allowPrivateNetwork ? undefined : new UrlGuard();
   const handoffs = new HandoffManager({ publicUrl: config.publicUrl });
   const vault = new Vault(config.dataDir, config.vaultKey);
@@ -300,6 +308,10 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
   await mkdir(config.dataDir, { recursive: true });
   await vault.init();
   if (oauth) await oauth.start();
+  if (issued) {
+    await issued.load();
+    if (!config.adminToken) log('warning: --issue-tokens without --admin-token; anyone who can reach POST /tokens can get a token (sandbox only)');
+  }
 
   async function createBrowserSession(user: string): Promise<BrowserSession> {
     const root = path.join(config.dataDir, 'users', user);
@@ -362,14 +374,78 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
   function authenticate(authorization: string | undefined, apiKey: string | undefined): Principal | undefined {
     if (unauthenticated) return { user: 'local' };
     // Static tokens: "Authorization: Bearer <token>", a bare Authorization value, or X-API-Key (gateways with fixed header forms).
-    const staticUser = tokens.authenticate(authorization) ?? (apiKey ? tokens.userFor(apiKey.trim()) : undefined);
+    const presented = bearerOf(authorization) ?? apiKey?.trim();
+    const staticUser = presented ? tokens.userFor(presented) : undefined;
     if (staticUser) return { user: staticUser };
+    const issuedUser = issued && presented ? issued.userFor(presented) : undefined;
+    if (issuedUser) return { user: issuedUser };
     if (oauth) {
       const match = /^\s*Bearer\s+(\S+)\s*$/i.exec(authorization ?? '');
       const user = match ? oauth.verifyAccessToken(match[1]!) : undefined;
       if (user) return { user: user.user, display: user.nickname };
     }
     return undefined;
+  }
+
+  /** True when the request carries the admin secret, or when none is configured (open sandbox). */
+  function isAdmin(authorization: string | undefined): boolean {
+    if (!config.adminToken) return true;
+    const presented = bearerOf(authorization);
+    if (!presented) return false;
+    const expected = Buffer.from(config.adminToken);
+    const candidate = Buffer.from(presented);
+    return expected.length === candidate.length && timingSafeEqual(expected, candidate);
+  }
+
+  /** Token administration: POST /tokens issues one, GET /tokens lists them (tokens included), DELETE /tokens/<user> revokes. */
+  async function handleTokens(pathname: string, req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+    if (!issued) return false;
+    if (pathname !== '/tokens' && !pathname.startsWith('/tokens/')) return false;
+    if (!isAdmin(req.headers.authorization)) {
+      sendJson(res, 401, { error: 'unauthorized' }, { 'www-authenticate': 'Bearer realm="browser-mcp-admin"' });
+      return true;
+    }
+    const method = req.method ?? 'GET';
+    try {
+      if (pathname === '/tokens' && method === 'POST') {
+        const body = (await readBody(req)) as Record<string, unknown> | URLSearchParams;
+        const requested = body instanceof URLSearchParams ? body.get('user') : body?.user;
+        if (requested !== undefined && requested !== null && typeof requested !== 'string') throw new IssueError(400, 'user must be a string');
+        const result = await issued.issue(typeof requested === 'string' ? requested : undefined);
+        log(`token issued for ${result.user}`);
+        sendJson(res, 201, result);
+        return true;
+      }
+      if (pathname === '/tokens' && method === 'GET') {
+        sendJson(res, 200, { tokens: issued.list() });
+        return true;
+      }
+      if (pathname.startsWith('/tokens/') && method === 'DELETE') {
+        const user = decodeURIComponent(pathname.slice('/tokens/'.length));
+        if (!(await issued.revoke(user))) {
+          sendJson(res, 404, { error: 'not found' });
+          return true;
+        }
+        log(`token of ${user} revoked`);
+        const entry = registry.user(user);
+        if (entry) {
+          await Promise.all([...entry.sessions].map((id) => registry.closeSession(id, 'token revoked')));
+          await registry.closeBrowser(entry, 'token revoked');
+        }
+        res.writeHead(204);
+        res.end();
+        return true;
+      }
+    } catch (error) {
+      if (error instanceof IssueError) {
+        sendJson(res, error.status, { error: error.message });
+        return true;
+      }
+      throw error;
+    }
+    res.writeHead(405, { allow: pathname === '/tokens' ? 'GET, POST' : 'DELETE' });
+    res.end();
+    return true;
   }
 
   function challenge(res: ServerResponse, tokenPresented: boolean, resourcePath: string): void {
@@ -562,6 +638,7 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
       return;
     }
     if (await handleOAuth(pathname, req, res, url)) return;
+    if (await handleTokens(pathname, req, res)) return;
     // Hand-over pages are reached by people with a link, not by MCP clients with a token.
     if (await handoffs.handle(pathname, req, res)) return;
     if (await secrets.handle(pathname, req, res)) return;
@@ -648,7 +725,13 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
   const hostForUrl = config.host.includes(':') ? `[${config.host}]` : config.host;
   const authDescription = unauthenticated
     ? 'no authentication, loopback only'
-    : [oauth ? 'Kakao login' : undefined, tokens.size ? `${tokens.size} static token(s)` : undefined].filter(Boolean).join(' + ');
+    : [
+        oauth ? 'Kakao login' : undefined,
+        tokens.size ? `${tokens.size} static token(s)` : undefined,
+        issued ? `${issued.size} issued token(s)` : undefined,
+      ]
+        .filter(Boolean)
+        .join(' + ');
   log(
     `listening on http://${hostForUrl}:${port}/mcp (${authDescription}, ${guard ? 'public web only' : 'private network allowed'}, ` +
       `idle timeout ${Math.round(config.idleTimeoutMs / 1000)}s, data in ${config.dataDir}); /mcp/lite serves the ${LITE_TOOLS.size}-tool chat subset`,

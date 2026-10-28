@@ -485,6 +485,85 @@ async function main(): Promise<void> {
     step('refusing to start without tokens on a non-loopback address');
     await assert.rejects(startServer(['--host', '0.0.0.0', '--allow-unauthenticated'], {}), /loopback/);
 
+    // ---- server E: issues its own tokens ----
+    const ADMIN = 'admin-secret-for-tests-1234';
+    const adminHeaders = { authorization: `Bearer ${ADMIN}`, 'content-type': 'application/json' };
+    const issuing = (url: string, init: RequestInit & { path?: string } = {}): Promise<Response> =>
+      fetch(new URL(init.path ?? '/tokens', url), { ...init, headers: { ...adminHeaders, ...(init.headers ?? {}) } });
+    let e = await startServer(['--issue-tokens', '--admin-token', ADMIN, '--allow-private-network', '--data-dir', dataDir('e')], {});
+    servers.push(e);
+
+    step('issuing tokens needs the admin secret');
+    const noAdmin = await fetch(new URL('/tokens', e.url), { method: 'POST' });
+    assert.equal(noAdmin.status, 401);
+    const wrongAdmin = await fetch(new URL('/tokens', e.url), { method: 'POST', headers: { authorization: 'Bearer not-the-admin-secret-1' } });
+    assert.equal(wrongAdmin.status, 401);
+
+    step('issued tokens are unique, named on request, listable, and refuse a taken name');
+    const first = await issuing(e.url, { method: 'POST' });
+    assert.equal(first.status, 201);
+    const firstToken = (await first.json()) as { token: string; user: string; createdAt: string };
+    assert.match(firstToken.token, /^bmt_[A-Za-z0-9_-]{43}$/);
+    assert.match(firstToken.user, /^user-[0-9a-f]{8}$/);
+    const second = await issuing(e.url, { method: 'POST', body: JSON.stringify({ user: 'carol' }) });
+    assert.equal(second.status, 201);
+    const carolToken = (await second.json()) as { token: string; user: string };
+    assert.equal(carolToken.user, 'carol');
+    assert.notEqual(carolToken.token, firstToken.token);
+    assert.equal((await issuing(e.url, { method: 'POST', body: JSON.stringify({ user: 'carol' }) })).status, 409);
+    assert.equal((await issuing(e.url, { method: 'POST', body: JSON.stringify({ user: 'bad name!' }) })).status, 400);
+    const issuedList = (await (await issuing(e.url)).json()) as { tokens: Array<Record<string, unknown>> };
+    assert.deepEqual(
+      issuedList.tokens.map((t: Record<string, unknown>) => [t.user, t.token]),
+      [[firstToken.user, firstToken.token], ['carol', carolToken.token]],
+      'listing shows every issued token, oldest first',
+    );
+
+    step('only issued tokens open sessions, each in its own browser');
+    const issuedOne = await connect(e.url, firstToken.token);
+    const issuedOneNav = await issuedOne.call('browser_navigate', { url: fixture.baseUrl });
+    assert.equal(issuedOneNav.isError, false, issuedOneNav.text);
+    const carolSession = await connect(e.url, carolToken.token);
+    const carolNav = await carolSession.call('browser_navigate', { url: fixture.baseUrl });
+    assert.equal(carolNav.isError, false, carolNav.text);
+    assert.equal((await health(e.url)).browsers, 2, 'each issued token gets its own browser');
+    await assert.rejects(connect(e.url, 'bmt_made-up-token-that-was-never-issued'), /401|Unauthorized/i);
+    const crossToken = await fetch(e.url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${carolToken.token}`,
+        'mcp-session-id': issuedOne.transport.sessionId ?? '',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+    assert.equal(crossToken.status, 404);
+
+    step('revoking a token closes its browser and rejects it afterwards');
+    assert.equal((await issuing(e.url, { method: 'DELETE', path: '/tokens/carol' })).status, 204);
+    assert.equal((await issuing(e.url, { method: 'DELETE', path: '/tokens/carol' })).status, 404);
+    await waitFor(async () => (await health(e.url)).browsers === 1, 10_000, 'revoked browser to close');
+    await assert.rejects(carolSession.call('browser_snapshot', {}), /401|404|Unauthorized|Session not found/i);
+    await carolSession.client.close().catch(() => undefined);
+    await issuedOne.client.close().catch(() => undefined);
+
+    step('issued tokens survive a restart');
+    await e.stop();
+    e = await startServer(['--issue-tokens', '--admin-token', ADMIN, '--allow-private-network', '--data-dir', dataDir('e')], {});
+    servers.push(e);
+    const afterRestart = await connect(e.url, firstToken.token);
+    assert.equal((await afterRestart.client.listTools()).tools.length, 25);
+    await assert.rejects(connect(e.url, carolToken.token), /401|Unauthorized/i);
+    await afterRestart.client.close().catch(() => undefined);
+    await e.stop();
+
+    step('without --admin-token the issuing endpoint is open');
+    const f = await startServer(['--issue-tokens', '--data-dir', dataDir('f')], {});
+    servers.push(f);
+    assert.equal((await fetch(new URL('/tokens', f.url), { method: 'POST' })).status, 201);
+    await f.stop();
+
     console.log('\nAll HTTP mode tests passed.');
   } finally {
     await Promise.all(servers.map((server) => server.stop()));
