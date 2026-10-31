@@ -174,6 +174,7 @@ export class BrowserSession {
       headless: config.headless,
       channel: config.channel,
       executablePath: config.executablePath,
+      args: config.browserArgs.length ? config.browserArgs : undefined,
       proxy: config.proxy ? compact({ server: config.proxy, bypass: config.proxyBypass }) : undefined,
     });
     const contextOptions: BrowserContextOptions = compact({

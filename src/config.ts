@@ -21,6 +21,8 @@ export interface Config {
   headless: boolean;
   channel?: string;
   executablePath?: string;
+  /** Extra command-line arguments for the browser process (--browser-arg, repeatable). */
+  browserArgs: string[];
   userDataDir?: string;
   storageState?: string;
   viewport: { width: number; height: number };
@@ -108,11 +110,13 @@ export const USAGE = `browser-mcp ${VERSION} - MCP server that lets an AI contro
 Usage: browser-mcp [options]
 
 Browser options:
-  --headless                 Run the browser without a visible window (default: headed; always headless with --http)
-  --headed                   Force a visible window (overrides BROWSER_MCP_HEADLESS)
+  --headless                 Run the browser without a visible window (default: headed; headless with --http)
+  --headed                   Force a visible window (overrides BROWSER_MCP_HEADLESS; with --http on Linux this
+                             needs a display, e.g. xvfb-run)
   --browser <name>           chromium | firefox | webkit (default: chromium)
   --channel <channel>        Use an installed browser channel, e.g. chrome, msedge, chrome-beta
   --executable-path <path>   Launch a specific browser binary
+  --browser-arg <arg>        Extra command-line argument for the browser; repeatable, e.g. --browser-arg=--lang=ko-KR
   --user-data-dir <dir>      Persistent profile directory (keeps logins and cookies between runs; stdio mode only)
   --storage-state <file>     Playwright storage-state JSON to load (cookies, localStorage)
   --viewport <WxH>           Viewport size (default: ${DEFAULTS.viewport.width}x${DEFAULTS.viewport.height})
@@ -154,7 +158,8 @@ Kakao Login (clients authenticate with a Kakao account instead of static tokens)
   -v, --version              Print the version
 
 Every option can also be set through an environment variable: BROWSER_MCP_HEADLESS,
-BROWSER_MCP_BROWSER, BROWSER_MCP_CHANNEL, BROWSER_MCP_EXECUTABLE_PATH, BROWSER_MCP_USER_DATA_DIR,
+BROWSER_MCP_BROWSER, BROWSER_MCP_CHANNEL, BROWSER_MCP_EXECUTABLE_PATH, BROWSER_MCP_BROWSER_ARGS
+(whitespace separated), BROWSER_MCP_USER_DATA_DIR,
 BROWSER_MCP_STORAGE_STATE, BROWSER_MCP_VIEWPORT, BROWSER_MCP_TIMEOUT, BROWSER_MCP_NAVIGATION_TIMEOUT,
 BROWSER_MCP_USER_AGENT, BROWSER_MCP_LOCALE, BROWSER_MCP_IGNORE_HTTPS_ERRORS,
 BROWSER_MCP_SNAPSHOT_MAX_CHARS, BROWSER_MCP_DOWNLOADS_DIR, BROWSER_MCP_PROXY, BROWSER_MCP_PROXY_BYPASS,
@@ -200,7 +205,7 @@ function parsePort(value: string, source: string): number {
 }
 
 export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): ParsedArgs {
-  let values: Record<string, string | boolean | undefined>;
+  let values: Record<string, string | boolean | string[] | undefined>;
   try {
     values = parseArgs({
       args: [...argv],
@@ -214,6 +219,7 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
         browser: { type: 'string' },
         channel: { type: 'string' },
         'executable-path': { type: 'string' },
+        'browser-arg': { type: 'string', multiple: true },
         'user-data-dir': { type: 'string' },
         'storage-state': { type: 'string' },
         viewport: { type: 'string' },
@@ -274,8 +280,13 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
   }
 
   const http = bool('http', 'HTTP') ?? false;
-  // A remote server has no display, so HTTP mode is headless unless --headed is given explicitly.
+  // A remote server usually has no display, so HTTP mode is headless unless asked otherwise
+  // (--headed, or BROWSER_MCP_HEADLESS=0 for a server running under a virtual display).
   const headless = values.headed === true ? false : (bool('headless', 'HEADLESS') ?? (http ? true : DEFAULTS.headless));
+  const browserArgsFromFlags = Array.isArray(values['browser-arg']) ? (values['browser-arg'] as string[]) : [];
+  const browserArgs = [...browserArgsFromFlags, ...(env.BROWSER_MCP_BROWSER_ARGS ?? '').split(/\s+/)]
+    .map((arg) => arg.trim())
+    .filter(Boolean);
   const viewportRaw = str('viewport', 'VIEWPORT');
   const timeoutRaw = str('timeout', 'TIMEOUT');
   const navigationTimeoutRaw = str('navigation-timeout', 'NAVIGATION_TIMEOUT');
@@ -292,6 +303,7 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
     headless,
     channel: str('channel', 'CHANNEL'),
     executablePath: str('executable-path', 'EXECUTABLE_PATH'),
+    browserArgs,
     userDataDir: str('user-data-dir', 'USER_DATA_DIR'),
     storageState: str('storage-state', 'STORAGE_STATE'),
     viewport: viewportRaw ? parseViewport(viewportRaw, '--viewport') : DEFAULTS.viewport,
@@ -342,6 +354,13 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
 
   if (config.proxyBypass && !config.proxy) {
     throw new ConfigError('--proxy-bypass requires --proxy');
+  }
+
+  if (http && !headless && process.platform === 'linux' && !env.DISPLAY && !env.WAYLAND_DISPLAY) {
+    throw new ConfigError(
+      'a visible browser in HTTP mode needs a display: run the server under xvfb-run (the Docker image does this ' +
+        'when BROWSER_MCP_HEADLESS=0) or drop --headed / set BROWSER_MCP_HEADLESS=1',
+    );
   }
 
   if (config.userDataDir && config.storageState) {

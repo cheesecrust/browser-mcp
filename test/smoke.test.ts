@@ -69,7 +69,13 @@ async function main(): Promise<void> {
 
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [path.join(projectRoot, 'dist', 'index.js'), '--headless', '--browser', 'chromium'],
+    args: [
+      path.join(projectRoot, 'dist', 'index.js'),
+      '--headless',
+      '--browser',
+      'chromium',
+      '--browser-arg=--user-agent=browser-mcp-smoke-test/1.0',
+    ],
     cwd: projectRoot,
     stderr: 'pipe',
   });
@@ -186,6 +192,10 @@ async function main(): Promise<void> {
     assert.match(intoView.text, /into view/);
 
     step('evaluate expressions and functions, with and without an element');
+    step('--browser-arg reaches the browser process');
+    const ua = await ok('browser_evaluate', { expression: 'navigator.userAgent' });
+    assert.match(ua.text, /browser-mcp-smoke-test\/1\.0/);
+
     const title = await ok('browser_evaluate', { expression: 'document.title' });
     assert.match(title.text, /"Fixture Home"/);
     const sum = await ok('browser_evaluate', { expression: '() => 1 + 2' });

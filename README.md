@@ -147,7 +147,7 @@ BROWSER_MCP_TOKENS="<토큰1>:alice,<토큰2>:bob" node dist/index.js --http --h
 node dist/index.js --http --host 0.0.0.0 --tokens-file tokens.json
 ```
 
-HTTP 모드는 항상 헤드리스이며, 카카오 로그인도 토큰도 없이는 127.0.0.1에서만(`--allow-unauthenticated`) 뜹니다.
+HTTP 모드는 기본적으로 헤드리스이며(화면이 있는 서버라면 `--headed`로 창을 띄울 수 있음), 카카오 로그인도 토큰도 없이는 127.0.0.1에서만(`--allow-unauthenticated`) 뜹니다.
 토큰을 미리 파일에 적어 두는 대신 서버가 발급하게 할 수도 있습니다. `--issue-tokens`를 켜면 브라우저로 `https://<호스트>/tokens`를 열어 토큰을 발급·회수할 수 있는 페이지가 나오고(토큰 값은 발급 직후 한 번만 표시), 같은 주소가 스크립트용 JSON API이기도 합니다. `POST /tokens`가 겹치지 않는 임의 토큰을 만들어 돌려주고, `GET /tokens`로 지금까지 발급한 토큰을 다시 볼 수 있습니다. 발급 내역은 `<data-dir>/issued-tokens.json`(0600)에 토큰 원문째 저장되므로 이 파일과 관리자 비밀은 샌드박스 밖으로 내보내지 마세요. 발급된 토큰만 통과하며, 토큰마다 별도 사용자(워크스페이스·세션)가 됩니다.
 
 ```bash
@@ -172,6 +172,12 @@ docker compose --profile https up -d --build   # Caddy가 $DOMAIN 의 인증서�
 
 이미지는 Playwright 공식 이미지(Chromium과 의존성 포함, 비root 사용자) 위에 만들어지고,
 사용자 데이터는 `/data` 볼륨에 남습니다. Chromium이 `/dev/shm`을 쓰므로 compose 파일이 `shm_size`를 1 GB로 잡습니다.
+
+이미지에는 실제 Google Chrome도 들어 있습니다(`--build-arg INSTALL_CHROME=0`으로 제외 가능). `.env`에
+`BROWSER_MCP_HEADLESS=0`을 주면 엔트리포인트가 Xvfb(가상 디스플레이) 위에서 서버를 띄워 브라우저가 창이 있는
+상태로 돌고, `BROWSER_MCP_CHANNEL=chrome`을 함께 주면 그 창이 Chromium 대신 Chrome이 됩니다. 쿠팡처럼 헤드리스
+브라우저를 403으로 거부하는 사이트에 필요합니다(아래 문제 해결 참고). 가상 디스플레이 해상도는
+`BROWSER_MCP_XVFB_SCREEN`(기본 `1280x720x24`)으로 바꿉니다.
 
 ### Lightsail / EC2에 SSH 없이 올리기
 
@@ -292,9 +298,10 @@ ChatGPT 웹과 Claude.ai의 커스텀 커넥터는 OAuth 서버를 요구하므�
 
 | 플래그 | 환경 변수 | 기본값 | 설명 |
 | --- | --- | --- | --- |
-| `--headless` / `--headed` | `BROWSER_MCP_HEADLESS` | headed | 창 표시 여부 |
+| `--headless` / `--headed` | `BROWSER_MCP_HEADLESS` | headed (HTTP 모드는 headless) | 창 표시 여부. HTTP 모드에서 창을 띄우려면 디스플레이(Xvfb 등)가 필요 |
 | `--browser <name>` | `BROWSER_MCP_BROWSER` | `chromium` | `chromium` / `firefox` / `webkit` |
 | `--channel <channel>` | `BROWSER_MCP_CHANNEL` | | 설치된 브라우저 사용: `chrome`, `msedge`, `chrome-beta` 등 |
+| `--browser-arg <arg>` | `BROWSER_MCP_BROWSER_ARGS` | | 브라우저 프로세스에 넘길 추가 인자. 플래그는 반복, 환경 변수는 공백으로 구분 (`--browser-arg=--lang=ko-KR`) |
 | `--executable-path <path>` | `BROWSER_MCP_EXECUTABLE_PATH` | | 특정 브라우저 실행 파일 |
 | `--user-data-dir <dir>` | `BROWSER_MCP_USER_DATA_DIR` | | 영속 프로필 디렉터리 (로그인/쿠키 유지) |
 | `--storage-state <file>` | `BROWSER_MCP_STORAGE_STATE` | | Playwright storage state JSON 로드 |
@@ -391,7 +398,7 @@ deploy/
 
 - **`Executable doesn't exist`**: `npx playwright install chromium` (또는 firefox/webkit)을 실행하세요. Playwright 버전을 올린 뒤에도 다시 필요합니다.
 - **창이 뜨는 게 싫다면**: `--headless` 또는 `BROWSER_MCP_HEADLESS=1`.
-- **봇 차단이 심한 사이트**: `--channel chrome`으로 실제 Chrome을 쓰고 `--user-data-dir`로 로그인 상태를 유지하면 도움이 됩니다.
+- **쿠팡 등에서 홈만 열어도 `403 Access Denied`(Akamai)**: IP 문제가 아닙니다. 같은 IP에서 헤드리스 브라우저와 `navigator.webdriver=true`인 브라우저는 403, 창이 있는 실제 Chrome에 `--disable-blink-features=AutomationControlled`를 준 경우는 200이 나옵니다. 그래서 세 가지가 함께 필요합니다: 창이 있는 모드(서버에서는 Xvfb, Docker 이미지는 `BROWSER_MCP_HEADLESS=0`이면 자동), `--channel chrome`(이미지에 Chrome 포함), `--browser-arg=--disable-blink-features=AutomationControlled`. 로컬에서는 `node dist/index.js --channel chrome --browser-arg=--disable-blink-features=AutomationControlled`입니다. 다만 이런 사이트는 이용약관으로 자동화 접근을 금지하고 행동 패턴으로도 다시 막을 수 있으니, 사용자 본인 계정으로 사람 속도로 쓰는 범위를 지키세요.
 - **사내 프록시 환경**: 브라우저는 셸의 `HTTP_PROXY` 환경 변수를 자동으로 따르지 않습니다. 외부 사이트가 열리지 않으면 `--proxy <url>`(또는 `BROWSER_MCP_PROXY`)을 지정하세요.
 - **서버 로그**: 모든 로그는 stderr로만 출력됩니다(stdout은 MCP 프로토콜 채널). Claude Code에서는 `claude mcp list` / 서버 로그로 확인할 수 있습니다.
 - **클라이언트가 종료됐는데 브라우저가 남아 있다면**: 서버는 stdin EOF 또는 SIGTERM을 받으면 브라우저를 닫습니다. 강제 종료(`kill -9`)된 경우에만 남을 수 있습니다.
