@@ -18,6 +18,8 @@ services:
       - browser-mcp-data:/data
     # Chromium keeps shared memory in /dev/shm; the Docker default of 64 MB crashes tabs.
     shm_size: "1gb"
+    # A real init as PID 1: forwards signals and reaps the helper processes Chrome and Xvfb leave behind.
+    init: true
     ports:
       - "${BROWSER_MCP_BIND:-127.0.0.1}:3000:3000"
 
