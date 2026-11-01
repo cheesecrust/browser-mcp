@@ -144,7 +144,7 @@ async function main(): Promise<void> {
     step('an authenticated client gets the full tool set and remote instructions');
     let alice = await connect(a.url, ALICE);
     const tools = await alice.client.listTools();
-    assert.equal(tools.tools.length, 25);
+    assert.equal(tools.tools.length, 26);
     assert.match(alice.client.getInstructions() ?? '', /shared remote server/);
     assert.ok(alice.transport.sessionId, 'server assigned a session id');
 
@@ -195,7 +195,7 @@ async function main(): Promise<void> {
     const lite = await connect(`${a.url}/lite`, ALICE);
     const liteTools = (await lite.client.listTools()).tools;
     const liteNames = liteTools.map((tool) => tool.name);
-    assert.equal(liteNames.length, 17);
+    assert.equal(liteNames.length, 18);
     assert.ok(liteNames.includes('browser_click') && liteNames.includes('browser_navigate'));
     assert.ok(!liteNames.includes('browser_screenshot') && !liteNames.includes('browser_evaluate') && !liteNames.includes('browser_file_upload'));
     assert.ok(
@@ -337,7 +337,7 @@ async function main(): Promise<void> {
     assert.equal(anonList.status, 200);
     assert.match(anonList.headers.get('content-type') ?? '', /application\/json/);
     const anonTools = (await anonList.json()) as { result?: { tools?: Array<{ name: string }> } };
-    assert.equal(anonTools.result?.tools?.length, 17);
+    assert.equal(anonTools.result?.tools?.length, 18);
     const anonInit = await anonymousPost(
       `${a.url}/lite`,
       rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'anonymous', version: '0' } }),
@@ -476,7 +476,7 @@ async function main(): Promise<void> {
 
     step('an unauthenticated loopback server accepts local clients');
     const local = await connect(d.url);
-    assert.equal((await local.client.listTools()).tools.length, 25);
+    assert.equal((await local.client.listTools()).tools.length, 26);
     const localNavigate = await local.call('browser_navigate', { url: fixture.baseUrl });
     assert.equal(localNavigate.isError, false, localNavigate.text);
     await local.client.close().catch(() => undefined);
@@ -561,7 +561,7 @@ async function main(): Promise<void> {
     e = await startServer(['--issue-tokens', '--admin-token', ADMIN, '--allow-private-network', '--data-dir', dataDir('e')], {});
     servers.push(e);
     const afterRestart = await connect(e.url, firstToken.token);
-    assert.equal((await afterRestart.client.listTools()).tools.length, 25);
+    assert.equal((await afterRestart.client.listTools()).tools.length, 26);
     await assert.rejects(connect(e.url, carolToken.token), /401|Unauthorized/i);
     await afterRestart.client.close().catch(() => undefined);
     await e.stop();

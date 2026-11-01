@@ -34,6 +34,7 @@ export const LITE_TOOLS: ReadonlySet<string> = new Set([
   'browser_wait_for',
   'browser_handle_dialog',
   'browser_tabs',
+  'browser_clear_cookies',
   'browser_close',
   'browser_request_human',
   'browser_request_credentials',

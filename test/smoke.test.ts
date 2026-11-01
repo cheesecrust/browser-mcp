@@ -49,6 +49,7 @@ const EXPECTED_TOOLS = [
   'browser_handle_dialog',
   'browser_tabs',
   'browser_resize',
+  'browser_clear_cookies',
   'browser_close',
 ].sort();
 
@@ -267,6 +268,16 @@ async function main(): Promise<void> {
     await ok('browser_resize', { width: 800, height: 600 });
     const width = await ok('browser_evaluate', { expression: 'window.innerWidth' });
     assert.match(width.text, /\n800$/);
+
+    step('clear_cookies removes the cookies of one site');
+    await ok('browser_evaluate', { expression: '() => { document.cookie = "smoke=1"; localStorage.setItem("smoke", "1"); return document.cookie; }' });
+    const untouched = await ok('browser_clear_cookies', { domain: 'elsewhere.example' });
+    assert.match(untouched.text, /Removed 0 cookies of elsewhere.example/);
+    const fixtureHost = new URL(fixture.baseUrl).hostname;
+    const cleared = await ok('browser_clear_cookies', { domain: fixtureHost });
+    assert.match(cleared.text, new RegExp(`Removed 1 cookie of ${fixtureHost.replaceAll('.', '\\.')}`));
+    const leftovers = await ok('browser_evaluate', { expression: '() => [document.cookie, localStorage.getItem("smoke")]' });
+    assert.match(leftovers.text, /"",\s*null/);
 
     step('scoped snapshot refs resolve');
     const formSnapshot = await ok('browser_snapshot', { selector: 'form' });

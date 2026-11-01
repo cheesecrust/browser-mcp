@@ -77,6 +77,30 @@ export function registerTabTools(tool: ToolRegistrar): void {
   );
 
   tool(
+    'browser_clear_cookies',
+    {
+      title: 'Clear cookies',
+      description:
+        'Delete the cookies of one site (including its subdomains) or, without a domain, every cookie. Use it when a site keeps answering "Access Denied" or similar on every page, which a stale anti-bot cookie causes; the site will ask for a fresh login afterwards. Also clears that site\'s localStorage in open tabs.',
+      input: {
+        domain: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe('Site whose cookies to delete, e.g. "coupang.com" (matches login.coupang.com too). Omit to delete all cookies.'),
+      },
+      annotations: { ...ACTION, destructiveHint: true },
+    },
+    async ({ domain }, session) => {
+      const removed = await session.clearCookies(domain);
+      return domain
+        ? `Removed ${removed} cookie${removed === 1 ? '' : 's'} of ${domain} and its subdomains.`
+        : `Removed all ${removed} cookie${removed === 1 ? '' : 's'}.`;
+    },
+  );
+
+  tool(
     'browser_close',
     {
       title: 'Close browser',

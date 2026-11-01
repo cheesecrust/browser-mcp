@@ -438,6 +438,39 @@ export class BrowserSession {
     return workspace ? path.relative(workspace.root, resolved) : resolved;
   }
 
+  /**
+   * Deletes the cookies of `domain` and its subdomains (every cookie without a domain), clears
+   * that site's localStorage in open tabs, and writes the state file. Returns how many cookies went.
+   */
+  async clearCookies(domain?: string): Promise<number> {
+    const context = await this.ensureContext();
+    const host = domain?.replace(/^\.+/, '').toLowerCase();
+    const matches = (candidate: string): boolean => {
+      if (!host) return true;
+      const name = candidate.replace(/^\.+/, '').toLowerCase();
+      return name === host || name.endsWith(`.${host}`);
+    };
+    const before = (await context.cookies()).filter((cookie) => matches(cookie.domain)).length;
+    await context.clearCookies(host ? { domain: new RegExp(`(^|\\.)${host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } : {});
+    for (const page of this.tabs()) {
+      let pageHost: string;
+      try {
+        pageHost = new URL(page.url()).hostname;
+      } catch {
+        continue;
+      }
+      if (!matches(pageHost)) continue;
+      await page
+        .evaluate(() => {
+          localStorage.clear();
+          sessionStorage.clear();
+        })
+        .catch(() => undefined);
+    }
+    await this.persistState();
+    return before;
+  }
+
   /** Saves cookies and storage to the user's state file shortly after an action (debounced). */
   schedulePersist(): void {
     if (!this.options.storageStatePath || !this.context || this.persistTimer) return;

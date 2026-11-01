@@ -88,6 +88,7 @@ claude mcp add --scope user browser -- node /path/to/browser-mcp/dist/index.js -
 | `browser_resize` | 뷰포트 크기 변경 |
 | `browser_console_messages` | 콘솔 출력과 처리되지 않은 에러 조회 (Chromium에서는 비어 있음, [patchright 제약](#patchright-제약)) |
 | `browser_network_requests` | 네트워크 요청 목록 조회 |
+| `browser_clear_cookies` | 한 사이트(하위 도메인 포함) 또는 전체 쿠키 삭제. 사이트가 모든 페이지에서 Access Denied를 낼 때(봇 방어 쿠키가 낡은 경우) 사용 |
 | `browser_close` | 브라우저 종료 (다음 호출 시 자동 재실행) |
 | `browser_request_human` | (원격 모드) 사람이 직접 조작할 수 있는 링크 발급: 로그인, 보안 문자 등 |
 | `browser_request_credentials` | (원격 모드) 저장된 로그인 목록과, 사람이 로그인 정보를 추가·삭제하는 링크 |
