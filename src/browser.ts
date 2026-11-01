@@ -224,6 +224,9 @@ export class BrowserSession {
       executablePath: config.executablePath,
       args: config.browserArgs.length ? config.browserArgs : undefined,
       proxy: config.proxy ? compact({ server: config.proxy, bypass: config.proxyBypass }) : undefined,
+      // TZ reaches every part of the browser (pages, workers, Date and Intl alike), unlike the
+      // per-page timezone emulation of the context options.
+      env: config.timezone ? { ...process.env, TZ: config.timezone } : undefined,
     });
     const contextOptions: BrowserContextOptions = compact({
       viewport: config.viewport,

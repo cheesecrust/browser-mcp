@@ -9,7 +9,7 @@ import { createServer } from './server.js';
 function describeBrowser(config: Config): string {
   return `${config.browser}${config.channel ? `/${config.channel}` : ''}, ${config.headless ? 'headless' : 'headed'}, ${
     config.viewport.width
-  }x${config.viewport.height}`;
+  }x${config.viewport.height}${config.timezone ? `, ${config.timezone}` : ''}`;
 }
 
 function onSignals(shutdown: (reason: string) => void): void {

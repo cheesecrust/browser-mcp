@@ -77,6 +77,8 @@ async function main(): Promise<void> {
       '--browser-arg=--js-flags=--expose-gc',
       '--user-agent',
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 browser-mcp-smoke-test/1.0',
+      '--timezone',
+      'America/Argentina/Ushuaia',
     ],
     cwd: projectRoot,
     stderr: 'pipe',
@@ -206,6 +208,13 @@ async function main(): Promise<void> {
     });
     assert.match(platform.text, /"Win32"/);
     assert.match(platform.text, /"Windows"/);
+
+    step('--timezone reaches pages and workers');
+    const zones = await ok('browser_evaluate', {
+      expression:
+        '() => new Promise((resolve) => { const w = new Worker(URL.createObjectURL(new Blob(["postMessage(Intl.DateTimeFormat().resolvedOptions().timeZone)"]))); w.onmessage = (e) => resolve([Intl.DateTimeFormat().resolvedOptions().timeZone, e.data]); })',
+    });
+    assert.match(zones.text, /"America\/Argentina\/Ushuaia",\s*"America\/Argentina\/Ushuaia"/);
 
     const title = await ok('browser_evaluate', { expression: 'document.title' });
     assert.match(title.text, /"Fixture Home"/);

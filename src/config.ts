@@ -32,6 +32,8 @@ export interface Config {
   navigationTimeout: number;
   userAgent?: string;
   locale?: string;
+  /** IANA time zone for the browser process (TZ), e.g. "Asia/Seoul"; applies to pages and workers alike. */
+  timezone?: string;
   ignoreHttpsErrors: boolean;
   /** Accessibility snapshots longer than this are truncated. */
   snapshotMaxChars: number;
@@ -124,6 +126,8 @@ Browser options:
   --navigation-timeout <ms>  Navigation timeout (default: ${DEFAULTS.navigationTimeout})
   --user-agent <ua>          Override the User-Agent string
   --locale <locale>          Browser locale, e.g. ko-KR
+  --timezone <id>            Time zone of the browser, e.g. Asia/Seoul (default: the host's; set it in containers,
+                             whose clock is usually UTC)
   --ignore-https-errors      Ignore TLS certificate errors
   --snapshot-max-chars <n>   Truncate accessibility snapshots beyond this size (default: ${DEFAULTS.snapshotMaxChars})
   --downloads-dir <dir>      Where downloaded files are saved (default: OS temp dir; per-user folder with --http)
@@ -161,7 +165,7 @@ Every option can also be set through an environment variable: BROWSER_MCP_HEADLE
 BROWSER_MCP_BROWSER, BROWSER_MCP_CHANNEL, BROWSER_MCP_EXECUTABLE_PATH, BROWSER_MCP_BROWSER_ARGS
 (whitespace separated), BROWSER_MCP_USER_DATA_DIR,
 BROWSER_MCP_STORAGE_STATE, BROWSER_MCP_VIEWPORT, BROWSER_MCP_TIMEOUT, BROWSER_MCP_NAVIGATION_TIMEOUT,
-BROWSER_MCP_USER_AGENT, BROWSER_MCP_LOCALE, BROWSER_MCP_IGNORE_HTTPS_ERRORS,
+BROWSER_MCP_USER_AGENT, BROWSER_MCP_LOCALE, BROWSER_MCP_TIMEZONE, BROWSER_MCP_IGNORE_HTTPS_ERRORS,
 BROWSER_MCP_SNAPSHOT_MAX_CHARS, BROWSER_MCP_DOWNLOADS_DIR, BROWSER_MCP_PROXY, BROWSER_MCP_PROXY_BYPASS,
 BROWSER_MCP_HTTP, BROWSER_MCP_HOST, BROWSER_MCP_PORT, BROWSER_MCP_TOKENS_FILE,
 BROWSER_MCP_TOKENS ("token1:alice,token2:bob"), BROWSER_MCP_ALLOW_UNAUTHENTICATED, BROWSER_MCP_DATA_DIR,
@@ -227,6 +231,7 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
         'navigation-timeout': { type: 'string' },
         'user-agent': { type: 'string' },
         locale: { type: 'string' },
+        timezone: { type: 'string' },
         'ignore-https-errors': { type: 'boolean' },
         'snapshot-max-chars': { type: 'string' },
         'downloads-dir': { type: 'string' },
@@ -313,6 +318,7 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
       : DEFAULTS.navigationTimeout,
     userAgent: str('user-agent', 'USER_AGENT'),
     locale: str('locale', 'LOCALE'),
+    timezone: str('timezone', 'TIMEZONE'),
     ignoreHttpsErrors: bool('ignore-https-errors', 'IGNORE_HTTPS_ERRORS') ?? false,
     snapshotMaxChars: snapshotMaxRaw
       ? parsePositiveInt(snapshotMaxRaw, '--snapshot-max-chars')
