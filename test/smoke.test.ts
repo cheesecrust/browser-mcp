@@ -261,7 +261,9 @@ async function main(): Promise<void> {
     const network = await ok('browser_network_requests', { filter: '127.0.0.1' });
     assert.match(network.text, /GET http:\/\/127\.0\.0\.1:\d+\/ -> 200 \[document\]/);
 
-    step('resize changes the viewport');
+    step('the screen is larger than the viewport; resize changes the viewport');
+    const screenSize = await ok('browser_evaluate', { expression: '() => [screen.width, screen.height]' });
+    assert.match(screenSize.text, /1920,\s*1080/);
     await ok('browser_resize', { width: 800, height: 600 });
     const width = await ok('browser_evaluate', { expression: 'window.innerWidth' });
     assert.match(width.text, /\n800$/);

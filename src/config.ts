@@ -26,6 +26,8 @@ export interface Config {
   userDataDir?: string;
   storageState?: string;
   viewport: { width: number; height: number };
+  /** Size reported by window.screen; never smaller than the viewport. */
+  screen: { width: number; height: number };
   /** Default timeout for element actions, in milliseconds. */
   actionTimeout: number;
   /** Timeout for page navigations, in milliseconds. */
@@ -91,6 +93,7 @@ export const DEFAULTS = {
   browser: 'chromium' as BrowserName,
   headless: false,
   viewport: { width: 1280, height: 720 },
+  screen: { width: 1920, height: 1080 },
   actionTimeout: 15_000,
   navigationTimeout: 30_000,
   snapshotMaxChars: 30_000,
@@ -122,6 +125,9 @@ Browser options:
   --user-data-dir <dir>      Persistent profile directory (keeps logins and cookies between runs; stdio mode only)
   --storage-state <file>     Playwright storage-state JSON to load (cookies, localStorage)
   --viewport <WxH>           Viewport size (default: ${DEFAULTS.viewport.width}x${DEFAULTS.viewport.height})
+  --screen <WxH>             Size that window.screen reports (default: ${DEFAULTS.screen.width}x${DEFAULTS.screen.height}, or the
+                             viewport when that is larger); without it the screen would equal the viewport,
+                             which no desktop shows
   --timeout <ms>             Default action timeout (default: ${DEFAULTS.actionTimeout})
   --navigation-timeout <ms>  Navigation timeout (default: ${DEFAULTS.navigationTimeout})
   --user-agent <ua>          Override the User-Agent string
@@ -164,7 +170,7 @@ Kakao Login (clients authenticate with a Kakao account instead of static tokens)
 Every option can also be set through an environment variable: BROWSER_MCP_HEADLESS,
 BROWSER_MCP_BROWSER, BROWSER_MCP_CHANNEL, BROWSER_MCP_EXECUTABLE_PATH, BROWSER_MCP_BROWSER_ARGS
 (whitespace separated), BROWSER_MCP_USER_DATA_DIR,
-BROWSER_MCP_STORAGE_STATE, BROWSER_MCP_VIEWPORT, BROWSER_MCP_TIMEOUT, BROWSER_MCP_NAVIGATION_TIMEOUT,
+BROWSER_MCP_STORAGE_STATE, BROWSER_MCP_VIEWPORT, BROWSER_MCP_SCREEN, BROWSER_MCP_TIMEOUT, BROWSER_MCP_NAVIGATION_TIMEOUT,
 BROWSER_MCP_USER_AGENT, BROWSER_MCP_LOCALE, BROWSER_MCP_TIMEZONE, BROWSER_MCP_IGNORE_HTTPS_ERRORS,
 BROWSER_MCP_SNAPSHOT_MAX_CHARS, BROWSER_MCP_DOWNLOADS_DIR, BROWSER_MCP_PROXY, BROWSER_MCP_PROXY_BYPASS,
 BROWSER_MCP_HTTP, BROWSER_MCP_HOST, BROWSER_MCP_PORT, BROWSER_MCP_TOKENS_FILE,
@@ -227,6 +233,7 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
         'user-data-dir': { type: 'string' },
         'storage-state': { type: 'string' },
         viewport: { type: 'string' },
+        screen: { type: 'string' },
         timeout: { type: 'string' },
         'navigation-timeout': { type: 'string' },
         'user-agent': { type: 'string' },
@@ -293,6 +300,9 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
     .map((arg) => arg.trim())
     .filter(Boolean);
   const viewportRaw = str('viewport', 'VIEWPORT');
+  const screenRaw = str('screen', 'SCREEN');
+  const viewport = viewportRaw ? parseViewport(viewportRaw, '--viewport') : DEFAULTS.viewport;
+  const screen = screenRaw ? parseViewport(screenRaw, '--screen') : DEFAULTS.screen;
   const timeoutRaw = str('timeout', 'TIMEOUT');
   const navigationTimeoutRaw = str('navigation-timeout', 'NAVIGATION_TIMEOUT');
   const snapshotMaxRaw = str('snapshot-max-chars', 'SNAPSHOT_MAX_CHARS');
@@ -311,7 +321,8 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
     browserArgs,
     userDataDir: str('user-data-dir', 'USER_DATA_DIR'),
     storageState: str('storage-state', 'STORAGE_STATE'),
-    viewport: viewportRaw ? parseViewport(viewportRaw, '--viewport') : DEFAULTS.viewport,
+    viewport,
+    screen: { width: Math.max(screen.width, viewport.width), height: Math.max(screen.height, viewport.height) },
     actionTimeout: timeoutRaw ? parsePositiveInt(timeoutRaw, '--timeout') : DEFAULTS.actionTimeout,
     navigationTimeout: navigationTimeoutRaw
       ? parsePositiveInt(navigationTimeoutRaw, '--navigation-timeout')

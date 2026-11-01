@@ -70,6 +70,7 @@ export function registerTabTools(tool: ToolRegistrar): void {
     async ({ width, height }, session) => {
       const page = await session.page();
       session.assertNoDialog(page);
+      // Playwright also sets window.screen to this size until the browser is relaunched.
       await page.setViewportSize({ width, height });
       return `Viewport resized to ${width}x${height}.`;
     },

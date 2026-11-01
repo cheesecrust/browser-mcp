@@ -334,6 +334,7 @@ export class BrowserSession {
     });
     const contextOptions: BrowserContextOptions = compact({
       viewport: config.viewport,
+      screen: config.screen,
       ignoreHTTPSErrors: config.ignoreHttpsErrors,
       userAgent: config.userAgent,
       locale: config.locale,
