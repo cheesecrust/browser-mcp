@@ -74,7 +74,9 @@ async function main(): Promise<void> {
       '--headless',
       '--browser',
       'chromium',
-      '--browser-arg=--user-agent=browser-mcp-smoke-test/1.0',
+      '--browser-arg=--js-flags=--expose-gc',
+      '--user-agent',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 browser-mcp-smoke-test/1.0',
     ],
     cwd: projectRoot,
     stderr: 'pipe',
@@ -193,8 +195,17 @@ async function main(): Promise<void> {
 
     step('evaluate expressions and functions, with and without an element');
     step('--browser-arg reaches the browser process');
+    const gc = await ok('browser_evaluate', { expression: 'typeof window.gc' });
+    assert.match(gc.text, /"function"/);
+
+    step('--user-agent also aligns navigator.platform and client hints');
     const ua = await ok('browser_evaluate', { expression: 'navigator.userAgent' });
     assert.match(ua.text, /browser-mcp-smoke-test\/1\.0/);
+    const platform = await ok('browser_evaluate', {
+      expression: '() => [navigator.platform, navigator.userAgentData && navigator.userAgentData.platform]',
+    });
+    assert.match(platform.text, /"Win32"/);
+    assert.match(platform.text, /"Windows"/);
 
     const title = await ok('browser_evaluate', { expression: 'document.title' });
     assert.match(title.text, /"Fixture Home"/);

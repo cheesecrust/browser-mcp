@@ -79,10 +79,58 @@ interface PageState {
   network: NetworkEntry[];
   dialog?: Dialog;
   dialogWaiters: Array<(dialog: Dialog) => void>;
+  /** Resolves once per-page emulation (platform alignment) is in place; tools wait for it before acting. */
+  ready?: Promise<void>;
 }
 
 const MAX_LOG_ENTRIES = 500;
 const ENGINES: Record<BrowserName, BrowserType> = { chromium, firefox, webkit };
+
+interface PlatformEmulation {
+  /** Value for navigator.platform. */
+  platform: string;
+  /** Client-hint metadata (Sec-CH-UA-Platform and friends). */
+  metadata: { platform: string; platformVersion: string; architecture: string; model: string; mobile: boolean };
+}
+
+/**
+ * The navigator.platform and client-hint values a real browser with this user agent would
+ * report. A user-agent override alone leaves navigator.platform at the host OS, and sites
+ * such as Akamai-protected ones refuse requests when the two disagree (or when either says
+ * Linux). Returns undefined for user agents that need no alignment.
+ */
+export function platformEmulationFor(userAgent: string): PlatformEmulation | undefined {
+  const mac = /Mac OS X (\d+(?:[._]\d+)*)/.exec(userAgent);
+  if (mac) {
+    const arm = !userAgent.includes('Intel');
+    return {
+      platform: 'MacIntel',
+      metadata: { platform: 'macOS', platformVersion: mac[1]!.replace(/_/g, '.'), architecture: arm ? 'arm' : 'x86', model: '', mobile: false },
+    };
+  }
+  const windows = /Windows NT (\d+(?:\.\d+)*)/.exec(userAgent);
+  if (windows) {
+    return {
+      platform: 'Win32',
+      metadata: { platform: 'Windows', platformVersion: windows[1]!, architecture: 'x86', model: '', mobile: false },
+    };
+  }
+  const android = /Android (\d+(?:\.\d+)*)/.exec(userAgent);
+  if (android) {
+    return {
+      platform: 'Linux armv8l',
+      metadata: { platform: 'Android', platformVersion: android[1]!, architecture: 'arm', model: '', mobile: /Mobile/.test(userAgent) },
+    };
+  }
+  const iphone = /iPhone OS (\d+(?:_\d+)*)/.exec(userAgent);
+  if (iphone) {
+    return {
+      platform: 'iPhone',
+      metadata: { platform: 'iOS', platformVersion: iphone[1]!.replace(/_/g, '.'), architecture: 'arm', model: '', mobile: true },
+    };
+  }
+  return undefined;
+}
 
 function pushCapped<T>(list: T[], item: T): void {
   list.push(item);
@@ -330,6 +378,7 @@ export class BrowserSession {
     const state: PageState = { console: [], network: [], dialogWaiters: [] };
     this.pages.set(page, state);
     this.activePage ??= page;
+    state.ready = this.alignPlatform(page);
 
     page.on('console', (message) => {
       const location = message.location();
@@ -426,6 +475,7 @@ export class BrowserSession {
       this.attachPage(page);
       this.activePage = page;
     }
+    await this.pages.get(this.activePage)?.ready;
     return this.activePage;
   }
 
@@ -435,8 +485,32 @@ export class BrowserSession {
     const page = await context.newPage();
     this.attachPage(page);
     this.activePage = page;
+    await this.pages.get(page)?.ready;
     if (url) await page.goto(url);
     return page;
+  }
+
+  /**
+   * With a user-agent override on Chromium, also report the matching navigator.platform and
+   * client hints, which Playwright's own override leaves at the host OS. Applied through a CDP
+   * session that stays attached: Chromium drops emulation state when its session detaches.
+   */
+  private async alignPlatform(page: Page): Promise<void> {
+    const { config } = this;
+    if (config.browser !== 'chromium' || !config.userAgent) return;
+    const emulation = platformEmulationFor(config.userAgent);
+    if (!emulation) return;
+    try {
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send('Emulation.setUserAgentOverride', {
+        userAgent: config.userAgent,
+        acceptLanguage: config.locale,
+        platform: emulation.platform,
+        userAgentMetadata: emulation.metadata,
+      });
+    } catch (error) {
+      if (!page.isClosed()) log(`platform alignment failed: ${(error as Error).message}`);
+    }
   }
 
   async selectTab(index: number): Promise<Page> {

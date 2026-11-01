@@ -308,7 +308,7 @@ ChatGPT 웹과 Claude.ai의 커스텀 커넥터는 OAuth 서버를 요구하므�
 | `--viewport <WxH>` | `BROWSER_MCP_VIEWPORT` | `1280x720` | 뷰포트 크기 |
 | `--timeout <ms>` | `BROWSER_MCP_TIMEOUT` | `15000` | 요소 액션 타임아웃 |
 | `--navigation-timeout <ms>` | `BROWSER_MCP_NAVIGATION_TIMEOUT` | `30000` | 페이지 이동 타임아웃 |
-| `--user-agent <ua>` | `BROWSER_MCP_USER_AGENT` | | User-Agent 지정 |
+| `--user-agent <ua>` | `BROWSER_MCP_USER_AGENT` | | User-Agent 지정. Chromium에서는 `navigator.platform`과 클라이언트 힌트(Sec-CH-UA-Platform)도 그 UA의 OS에 맞춰 함께 바꿉니다 |
 | `--locale <locale>` | `BROWSER_MCP_LOCALE` | | 브라우저 로케일 (`ko-KR` 등) |
 | `--ignore-https-errors` | `BROWSER_MCP_IGNORE_HTTPS_ERRORS` | off | 인증서 오류 무시 |
 | `--snapshot-max-chars <n>` | `BROWSER_MCP_SNAPSHOT_MAX_CHARS` | `30000` | 스냅샷 최대 길이 |
@@ -407,6 +407,7 @@ patchright는 사이트가 자동화를 탐지하는 데 쓰는 CDP 흔적(`Runt
 - **`Executable doesn't exist`**: `npx patchright install chromium` (또는 firefox/webkit)을 실행하세요. patchright 버전을 올린 뒤에도 다시 필요합니다.
 - **창이 뜨는 게 싫다면**: `--headless` 또는 `BROWSER_MCP_HEADLESS=1`.
 - **쿠팡 등에서 홈만 열어도 `403 Access Denied`(Akamai)**: IP 문제가 아닙니다. 같은 IP에서 헤드리스 브라우저와 `navigator.webdriver=true`인 브라우저는 403, 창이 있는 실제 Chrome에 `--disable-blink-features=AutomationControlled`를 준 경우는 200이 나옵니다. 그래서 세 가지가 함께 필요합니다: 창이 있는 모드(서버에서는 Xvfb, Docker 이미지는 `BROWSER_MCP_HEADLESS=0`이면 자동), `--channel chrome`(이미지에 Chrome 포함), `--browser-arg=--disable-blink-features=AutomationControlled`. 로컬에서는 `node dist/index.js --channel chrome --browser-arg=--disable-blink-features=AutomationControlled`입니다. 다만 이런 사이트는 이용약관으로 자동화 접근을 금지하고 행동 패턴으로도 다시 막을 수 있으니, 사용자 본인 계정으로 사람 속도로 쓰는 범위를 지키세요.
+- **쿠팡에서 홈은 열리는데 API만 403(인증번호 발송 "데이터 요청 실패" 등)**: Linux 지문 때문입니다. 쿠팡 원서버는 `X11; Linux` User-Agent의 API 호출(`/n-api/*`)을 403으로 막고, Akamai는 인증번호 API에서 UA나 `navigator.platform` 중 하나라도 Linux면 거부합니다. Docker의 Chrome은 Linux에서 돌므로 `BROWSER_MCP_USER_AGENT`에 Mac Chrome UA를 주세요(서버가 `navigator.platform`과 클라이언트 힌트도 macOS로 맞춥니다). Xvfb에는 GPU가 없어 WebGL이 비는 것도 봇 신호이므로 `--use-angle=swiftshader --enable-unsafe-swiftshader --ignore-gpu-blocklist`로 소프트웨어 WebGL을 켭니다. 시작 스크립트의 `VISIBLE_CHROME="true"`는 이 둘을 `.env`에 함께 넣습니다.
 - **사내 프록시 환경**: 브라우저는 셸의 `HTTP_PROXY` 환경 변수를 자동으로 따르지 않습니다. 외부 사이트가 열리지 않으면 `--proxy <url>`(또는 `BROWSER_MCP_PROXY`)을 지정하세요.
 - **서버 로그**: 모든 로그는 stderr로만 출력됩니다(stdout은 MCP 프로토콜 채널). Claude Code에서는 `claude mcp list` / 서버 로그로 확인할 수 있습니다.
 - **클라이언트가 종료됐는데 브라우저가 남아 있다면**: 서버는 stdin EOF 또는 SIGTERM을 받으면 브라우저를 닫습니다. 강제 종료(`kill -9`)된 경우에만 남을 수 있습니다.

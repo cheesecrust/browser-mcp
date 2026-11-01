@@ -26,7 +26,7 @@ STATIC_TOKENS=""                        # optional "token:user,token2:user2" (16
 ISSUE_TOKENS="false"                    # "true": the server issues tokens via POST /tokens and lists them via GET /tokens
 ADMIN_TOKEN=""                          # secret (16+ characters) required to call /tokens; empty = open endpoint (sandbox only)
 OAUTH_CLIENTS=""                        # optional pre-registered OAuth clients for PlayMCP: "id:secret[:redirect_uri]"
-VISIBLE_CHROME="true"                   # "true": real Google Chrome with a window under Xvfb (sites such as coupang.com refuse headless browsers)
+VISIBLE_CHROME="true"                   # "true": real Google Chrome with a window under Xvfb, software WebGL and a Mac user agent (coupang.com refuses headless browsers and Linux fingerprints)
 REPO_URL="https://github.com/cheesecrust/browser-mcp.git"
 BRANCH="main"
 AUTO_UPDATE="true"                      # hourly: pull the branch and rebuild when it moved
@@ -101,7 +101,8 @@ main() {
         if [ "$VISIBLE_CHROME" = "true" ]; then
           echo "BROWSER_MCP_HEADLESS=0"
           echo "BROWSER_MCP_CHANNEL=chrome"
-          echo "BROWSER_MCP_BROWSER_ARGS=--disable-blink-features=AutomationControlled"
+          echo "BROWSER_MCP_BROWSER_ARGS=--disable-blink-features=AutomationControlled --use-angle=swiftshader --enable-unsafe-swiftshader --ignore-gpu-blocklist"
+          echo "BROWSER_MCP_USER_AGENT=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
         fi
         true
       } > "$APP_DIR/.env"
