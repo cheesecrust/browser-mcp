@@ -11,7 +11,7 @@ case "$headless" in
   0 | false | no | off)
     if [ -z "${DISPLAY:-}" ]; then
       if command -v Xvfb > /dev/null 2>&1; then
-        screen="${BROWSER_MCP_XVFB_SCREEN:-1280x720x24}"
+        screen="${BROWSER_MCP_XVFB_SCREEN:-1920x1080x24}"
         display=":99"
         echo "browser-mcp: visible browser requested; starting Xvfb on $display ($screen)" >&2
         Xvfb "$display" -screen 0 "$screen" -nolisten tcp -ac +extension GLX +render -noreset &

@@ -177,7 +177,9 @@ docker compose --profile https up -d --build   # Caddy가 $DOMAIN 의 인증서�
 `BROWSER_MCP_HEADLESS=0`을 주면 엔트리포인트가 Xvfb(가상 디스플레이) 위에서 서버를 띄워 브라우저가 창이 있는
 상태로 돌고, `BROWSER_MCP_CHANNEL=chrome`을 함께 주면 그 창이 Chromium 대신 Chrome이 됩니다. 쿠팡처럼 헤드리스
 브라우저를 403으로 거부하는 사이트에 필요합니다(아래 문제 해결 참고). 가상 디스플레이 해상도는
-`BROWSER_MCP_XVFB_SCREEN`(기본 `1280x720x24`)으로 바꿉니다.
+`BROWSER_MCP_XVFB_SCREEN`(기본 `1920x1080x24`)으로 바꿉니다. 이미지는 브라우저 시계를 `BROWSER_MCP_TIMEZONE`(기본 `Asia/Seoul`)에
+맞추고 한글 폰트(Noto Sans CJK, 나눔)를 넣어 둡니다. 컨테이너의 UTC 시계와 폰트 없는 글꼴 목록은 사이트가 서버 브라우저를
+알아보는 단서가 되기 때문입니다.
 
 ### Lightsail / EC2에 SSH 없이 올리기
 
@@ -308,8 +310,9 @@ ChatGPT 웹과 Claude.ai의 커스텀 커넥터는 OAuth 서버를 요구하므�
 | `--viewport <WxH>` | `BROWSER_MCP_VIEWPORT` | `1280x720` | 뷰포트 크기 |
 | `--timeout <ms>` | `BROWSER_MCP_TIMEOUT` | `15000` | 요소 액션 타임아웃 |
 | `--navigation-timeout <ms>` | `BROWSER_MCP_NAVIGATION_TIMEOUT` | `30000` | 페이지 이동 타임아웃 |
-| `--user-agent <ua>` | `BROWSER_MCP_USER_AGENT` | | User-Agent 지정. Chromium에서는 `navigator.platform`과 클라이언트 힌트(Sec-CH-UA-Platform)도 그 UA의 OS에 맞춰 함께 바꿉니다 |
+| `--user-agent <ua>` | `BROWSER_MCP_USER_AGENT` | | User-Agent 지정. Chromium에서는 `navigator.platform`과 클라이언트 힌트(Sec-CH-UA-Platform)도 그 UA의 OS에 맞춰 페이지와 cross-origin iframe에서 함께 바꿉니다. 웹 워커 안의 `navigator.platform`은 Chrome이 오버라이드를 무시해 호스트 OS가 그대로 보입니다 |
 | `--locale <locale>` | `BROWSER_MCP_LOCALE` | | 브라우저 로케일 (`ko-KR` 등) |
+| `--timezone <id>` | `BROWSER_MCP_TIMEZONE` | 호스트 시간대 (Docker 이미지는 `Asia/Seoul`) | 브라우저 시간대. 브라우저 프로세스의 `TZ`로 전달되어 페이지와 워커 모두에 적용 |
 | `--ignore-https-errors` | `BROWSER_MCP_IGNORE_HTTPS_ERRORS` | off | 인증서 오류 무시 |
 | `--snapshot-max-chars <n>` | `BROWSER_MCP_SNAPSHOT_MAX_CHARS` | `30000` | 스냅샷 최대 길이 |
 | `--downloads-dir <dir>` | `BROWSER_MCP_DOWNLOADS_DIR` | OS temp | 다운로드 저장 위치 |

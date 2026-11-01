@@ -25,9 +25,11 @@ RUN set -eu; \
       if [ "$(dpkg --print-architecture)" = "amd64" ]; then npx patchright install chrome; \
       else echo "INSTALL_CHROME: Google Chrome has no Linux arm64 build; keeping Playwright's Chromium" >&2; fi; \
     fi; \
-    if ! command -v xvfb-run > /dev/null; then \
-      apt-get update && apt-get install -y --no-install-recommends xvfb && rm -rf /var/lib/apt/lists/*; \
-    fi
+    # Korean fonts: the base image has none, and a browser whose font list lacks every CJK face
+    # stands out to fingerprinting scripts as much as it hurts rendering of Korean sites.
+    packages="fonts-noto-cjk fonts-nanum tzdata"; \
+    if ! command -v xvfb-run > /dev/null; then packages="$packages xvfb"; fi; \
+    apt-get update && apt-get install -y --no-install-recommends $packages && rm -rf /var/lib/apt/lists/*
 COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint
 RUN chmod +x /usr/local/bin/docker-entrypoint
 
@@ -36,10 +38,13 @@ RUN mkdir -p /data && chown pwuser:pwuser /data
 USER pwuser
 VOLUME ["/data"]
 
+# The browser's clock follows BROWSER_MCP_TIMEZONE (override it in .env); a container otherwise
+# runs on UTC, which contradicts a Korean IP address and locale.
 ENV BROWSER_MCP_HTTP=1 \
     BROWSER_MCP_HOST=0.0.0.0 \
     BROWSER_MCP_PORT=3000 \
     BROWSER_MCP_DATA_DIR=/data \
+    BROWSER_MCP_TIMEZONE=Asia/Seoul \
     NODE_ENV=production
 EXPOSE 3000
 
