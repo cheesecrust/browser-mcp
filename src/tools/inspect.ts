@@ -204,7 +204,7 @@ export function registerInspectionTools(tool: ToolRegistrar): void {
     {
       title: 'Console messages',
       description:
-        'Return console output and uncaught errors recorded for the active tab since it was opened (or since the last clear).',
+        'Return console output and uncaught errors recorded for the active tab since it was opened (or since the last clear). Not available in Chromium: patchright disables the console API to avoid automation detection, so only Firefox/WebKit record messages.',
       input: {
         level: z
           .enum(['all', 'warning', 'error'])
@@ -225,6 +225,9 @@ export function registerInspectionTools(tool: ToolRegistrar): void {
             : all;
       if (clear) session.clearConsole(page);
       if (wanted.length === 0) {
+        if (session.config.browser === 'chromium') {
+          return 'No console messages. Console capture is disabled in Chromium: patchright turns off the console API so sites cannot detect automation. Use browser_evaluate to read values from the page instead.';
+        }
         return `No console messages${level && level !== 'all' ? ` at level ${level} or above` : ''}.`;
       }
       const { slice, note } = clampText(formatConsole(wanted), MAX_RESULT_CHARS);

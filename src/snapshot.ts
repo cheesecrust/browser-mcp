@@ -1,4 +1,4 @@
-import type { Page } from 'playwright';
+import type { Page } from 'patchright';
 import type { BrowserSession } from './browser.js';
 
 export interface DescribeOptions {

@@ -1,6 +1,7 @@
 # Remote (HTTP) mode image. The Playwright base image ships Chromium with every
-# system dependency and a non-root user; its tag must match the playwright version
-# in package.json.
+# system dependency and a non-root user. patchright (our Playwright fork) uses the same
+# Chromium build, so the image tag must match the patchright version in package.json
+# (compare the chromium revision in node_modules/patchright-core/browsers.json).
 FROM mcr.microsoft.com/playwright:v1.64.1-noble AS build
 WORKDIR /app
 COPY package.json package-lock.json tsconfig.json ./
@@ -21,7 +22,7 @@ COPY --from=build /app/dist ./dist
 ARG INSTALL_CHROME=1
 RUN set -eu; \
     if [ "$INSTALL_CHROME" = "1" ]; then \
-      if [ "$(dpkg --print-architecture)" = "amd64" ]; then npx playwright install chrome; \
+      if [ "$(dpkg --print-architecture)" = "amd64" ]; then npx patchright install chrome; \
       else echo "INSTALL_CHROME: Google Chrome has no Linux arm64 build; keeping Playwright's Chromium" >&2; fi; \
     fi; \
     if ! command -v xvfb-run > /dev/null; then \

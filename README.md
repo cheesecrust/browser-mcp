@@ -1,25 +1,25 @@
 # browser-mcp
 
 AI 에이전트(Claude Code, Claude Desktop, Cursor 등)가 **실제 브라우저를 직접 조작**할 수 있게 해주는
-[MCP(Model Context Protocol)](https://modelcontextprotocol.io) 서버입니다. 내부적으로 [Playwright](https://playwright.dev)를 사용합니다.
+[MCP(Model Context Protocol)](https://modelcontextprotocol.io) 서버입니다. 내부적으로 [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright)(자동화 탐지를 피하도록 패치한 [Playwright](https://playwright.dev) 포크, API 동일)를 사용합니다.
 
 - 페이지를 열고, 접근성 트리 **스냅샷**(각 요소에 `[ref=e12]` 같은 id가 붙음)을 읽은 뒤, ref로 클릭/입력/선택
 - 모든 액션이 **변경된 페이지 스냅샷을 함께 반환**하므로 왕복 횟수가 적음
-- 스크린샷, 텍스트 추출, JavaScript 실행, 탭 관리, 다이얼로그 처리, 콘솔/네트워크 로그 조회
+- 스크린샷, 텍스트 추출, JavaScript 실행, 탭 관리, 다이얼로그 처리, 네트워크 로그 조회 (콘솔 로그는 Firefox/WebKit에서만, [아래 참고](#patchright-제약))
 - 헤드리스/헤디드, Chromium/Firefox/WebKit, 설치된 Chrome 사용, 로그인 유지용 영속 프로필 지원
 - **원격(HTTP) 모드**: 서버 한 대를 여러 사람이 카카오 로그인(또는 고정 토큰)으로 나눠 쓰고, 사용자별로 브라우저·로그인 상태가 분리됨 ([아래 참고](#원격http-모드-서버-한-대를-여러-사람이-쓰기))
 
 ## 요구 사항
 
 - Node.js 20.11 이상
-- Playwright 브라우저 바이너리 (아래 설치 명령 참고)
+- 브라우저 바이너리 (아래 설치 명령 참고)
 
 ## 설치
 
 ```bash
 cd /path/to/browser-mcp
 npm install
-npx playwright install chromium   # 처음 한 번 (Firefox/WebKit을 쓰려면 해당 브라우저도 설치)
+npx patchright install chromium   # 처음 한 번 (Firefox/WebKit을 쓰려면 해당 브라우저도 설치. patchright의 탐지 우회 패치는 Chromium 계열에만 적용됨)
 npm run build
 ```
 
@@ -86,7 +86,7 @@ claude mcp add --scope user browser -- node /path/to/browser-mcp/dist/index.js -
 | `browser_handle_dialog` | alert/confirm/prompt 수락 또는 취소 |
 | `browser_tabs` | 탭 목록/새 탭/전환/닫기 |
 | `browser_resize` | 뷰포트 크기 변경 |
-| `browser_console_messages` | 콘솔 출력과 처리되지 않은 에러 조회 |
+| `browser_console_messages` | 콘솔 출력과 처리되지 않은 에러 조회 (Chromium에서는 비어 있음, [patchright 제약](#patchright-제약)) |
 | `browser_network_requests` | 네트워크 요청 목록 조회 |
 | `browser_close` | 브라우저 종료 (다음 호출 시 자동 재실행) |
 | `browser_request_human` | (원격 모드) 사람이 직접 조작할 수 있는 링크 발급: 로그인, 보안 문자 등 |
@@ -170,7 +170,7 @@ docker compose up -d --build       # 127.0.0.1:3000 에 HTTP로 (앞에 자체 �
 docker compose --profile https up -d --build   # Caddy가 $DOMAIN 의 인증서를 받아 HTTPS 로 서비스
 ```
 
-이미지는 Playwright 공식 이미지(Chromium과 의존성 포함, 비root 사용자) 위에 만들어지고,
+이미지는 Playwright 공식 이미지(Chromium과 의존성 포함, 비root 사용자) 위에 만들어지고(patchright는 같은 Chromium 빌드를 쓰므로 이미지 태그의 Playwright 버전과 patchright 버전을 맞춰야 함),
 사용자 데이터는 `/data` 볼륨에 남습니다. Chromium이 `/dev/shm`을 쓰므로 compose 파일이 `shm_size`를 1 GB로 잡습니다.
 
 이미지에는 실제 Google Chrome도 들어 있습니다(`--build-arg INSTALL_CHROME=0`으로 제외 가능). `.env`에
@@ -394,9 +394,17 @@ deploy/
   update.sh            브랜치가 바뀌었을 때 다시 빌드 (cron)
 ```
 
+## patchright 제약
+
+patchright는 사이트가 자동화를 탐지하는 데 쓰는 CDP 흔적(`Runtime.enable`, `Console.enable`, 유틸리티 스크립트 주입 등)을 없앤 Playwright 포크입니다. 그 대가로 다음이 달라집니다.
+
+- **콘솔 로그를 못 받습니다**: Chromium에서 `page.on('console')`과 `page.on('pageerror')`가 오지 않으므로 `browser_console_messages`는 항상 비어 있고 그 이유를 함께 돌려줍니다. 페이지 값을 읽어야 하면 `browser_evaluate`를 쓰세요. Firefox/WebKit은 패치 대상이 아니라 원래대로 동작합니다.
+- **탐지 우회 패치는 Chromium 계열에만** 적용됩니다. `--channel chrome`과 창이 있는 모드를 함께 쓰면 효과가 가장 큽니다.
+- 브라우저 설치 명령이 `npx patchright install …`입니다. Playwright와 같은 Chromium 빌드를 받으므로 Docker 이미지의 Playwright 태그는 patchright 버전에 맞춥니다.
+
 ## 문제 해결
 
-- **`Executable doesn't exist`**: `npx playwright install chromium` (또는 firefox/webkit)을 실행하세요. Playwright 버전을 올린 뒤에도 다시 필요합니다.
+- **`Executable doesn't exist`**: `npx patchright install chromium` (또는 firefox/webkit)을 실행하세요. patchright 버전을 올린 뒤에도 다시 필요합니다.
 - **창이 뜨는 게 싫다면**: `--headless` 또는 `BROWSER_MCP_HEADLESS=1`.
 - **쿠팡 등에서 홈만 열어도 `403 Access Denied`(Akamai)**: IP 문제가 아닙니다. 같은 IP에서 헤드리스 브라우저와 `navigator.webdriver=true`인 브라우저는 403, 창이 있는 실제 Chrome에 `--disable-blink-features=AutomationControlled`를 준 경우는 200이 나옵니다. 그래서 세 가지가 함께 필요합니다: 창이 있는 모드(서버에서는 Xvfb, Docker 이미지는 `BROWSER_MCP_HEADLESS=0`이면 자동), `--channel chrome`(이미지에 Chrome 포함), `--browser-arg=--disable-blink-features=AutomationControlled`. 로컬에서는 `node dist/index.js --channel chrome --browser-arg=--disable-blink-features=AutomationControlled`입니다. 다만 이런 사이트는 이용약관으로 자동화 접근을 금지하고 행동 패턴으로도 다시 막을 수 있으니, 사용자 본인 계정으로 사람 속도로 쓰는 범위를 지키세요.
 - **사내 프록시 환경**: 브라우저는 셸의 `HTTP_PROXY` 환경 변수를 자동으로 따르지 않습니다. 외부 사이트가 열리지 않으면 `--proxy <url>`(또는 `BROWSER_MCP_PROXY`)을 지정하세요.

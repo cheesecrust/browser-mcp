@@ -1,5 +1,5 @@
 import type { CallToolResult, McpServer, ToolAnnotations } from '@modelcontextprotocol/server';
-import type { Page } from 'playwright';
+import type { Page } from 'patchright';
 import * as z from 'zod/v4';
 import { UserError, type BrowserSession } from '../browser.js';
 import { describePage, type DescribeOptions } from '../snapshot.js';

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { CDPSession, Page } from 'playwright';
+import type { CDPSession, Page } from 'patchright';
 import { Mutex, type BrowserSession } from './browser.js';
 import { log } from './log.js';
 

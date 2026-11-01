@@ -105,7 +105,7 @@ export const DEFAULTS = {
   },
 };
 
-export const USAGE = `browser-mcp ${VERSION} - MCP server that lets an AI control a browser through Playwright
+export const USAGE = `browser-mcp ${VERSION} - MCP server that lets an AI control a browser through patchright (Playwright fork)
 
 Usage: browser-mcp [options]
 

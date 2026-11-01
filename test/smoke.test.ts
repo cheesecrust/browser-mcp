@@ -1,7 +1,7 @@
 /**
  * End-to-end smoke test: spawns the built server over stdio exactly like an MCP
  * host would, drives a local fixture site through the tools, and asserts on the
- * results. Run with `npm test` (builds first) after `npx playwright install chromium`.
+ * results. Run with `npm test` (builds first) after `npx patchright install chromium`.
  */
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
@@ -232,15 +232,12 @@ async function main(): Promise<void> {
     const value = await ok('browser_evaluate', { expression: '(el) => el.value', selector: '#q' });
     assert.match(value.text, /"ab"/);
 
-    step('console and network logs are recorded');
+    step('console tool explains the patchright limitation; network log is recorded');
+    // patchright disables the Chromium console API (Console.enable / Runtime.enable leak), so
+    // page.on('console') and page.on('pageerror') never fire. The tool says so instead of
+    // returning a bare empty list.
     const consoleAll = await ok('browser_console_messages');
-    assert.match(consoleAll.text, /LOG: fixture loaded/);
-    assert.match(consoleAll.text, /ERROR: fixture error log/);
-    const consoleErrors = await ok('browser_console_messages', { level: 'error', clear: true });
-    assert.match(consoleErrors.text, /ERROR: fixture error log/);
-    assert.doesNotMatch(consoleErrors.text, /LOG: fixture loaded/);
-    const consoleCleared = await ok('browser_console_messages');
-    assert.match(consoleCleared.text, /No console messages/);
+    assert.match(consoleAll.text, /No console messages\. Console capture is disabled in Chromium/);
     const network = await ok('browser_network_requests', { filter: '127.0.0.1' });
     assert.match(network.text, /GET http:\/\/127\.0\.0\.1:\d+\/ -> 200 \[document\]/);
 

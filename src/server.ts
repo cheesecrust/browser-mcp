@@ -60,7 +60,7 @@ function instructionsFor(profile: ToolProfile, remote: boolean): string {
       ? '3. Use browser_snapshot to re-read the page and browser_get_text to read long content.'
       : '3. Use browser_snapshot to re-read the page, browser_get_text to read long content, and browser_screenshot only when the visual layout matters.';
   const parts = [
-    `browser-mcp drives a real browser through Playwright.
+    `browser-mcp drives a real browser through patchright (a Playwright fork).
 
 Workflow:
 1. browser_navigate to open a page. The result contains an accessibility snapshot in which every element has a ref such as [ref=e12].

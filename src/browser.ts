@@ -1,7 +1,7 @@
 import { access, mkdir, rename, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { chromium, firefox, webkit } from 'playwright';
+import { chromium, firefox, webkit } from 'patchright';
 import type {
   Browser,
   BrowserContext,
@@ -13,7 +13,7 @@ import type {
   Locator,
   Page,
   Request,
-} from 'playwright';
+} from 'patchright';
 import type { BrowserName, Config } from './config.js';
 import { log } from './log.js';
 import { isBlockedScheme, logBlocked, type UrlGuard } from './policy.js';
