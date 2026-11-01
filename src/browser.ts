@@ -7,6 +7,7 @@ import type {
   BrowserContext,
   BrowserContextOptions,
   BrowserType,
+  CDPSession,
   Dialog,
   Download,
   LaunchOptions,
@@ -166,6 +167,109 @@ export function normalizeUrl(input: string): string {
   return `https://${url}`;
 }
 
+/** What navigator.userAgentData.platform reports on this machine. */
+const HOST_PLATFORM: string = { linux: 'Linux', darwin: 'macOS', win32: 'Windows' }[os.platform() as string] ?? os.platform();
+
+const AUTO_ATTACH = { autoAttach: true, waitForDebuggerOnStart: true, flatten: false } as const;
+
+interface CdpMessage {
+  id?: number;
+  method?: string;
+  params?: Record<string, unknown>;
+  result?: unknown;
+  error?: { message: string };
+}
+
+interface ChildTargetInfo {
+  type: string;
+  url: string;
+}
+
+type ChildSend = (method: string, params?: Record<string, unknown>) => Promise<CdpMessage>;
+
+/**
+ * Reaches the child targets of a page (cross-origin iframes, their nested frames, workers) through
+ * Chromium's non-flattened Target protocol, which the Playwright CDPSession API otherwise hides:
+ * commands travel inside Target.sendMessageToTarget envelopes and replies come back as
+ * Target.receivedMessageFromTarget events, nested once per level. Every attached target is
+ * resumed after `onAttached` ran, whether or not the callback touched it.
+ */
+class ChildTargets {
+  private nextId = 1;
+  private readonly pending = new Map<number, (message: CdpMessage) => void>();
+
+  constructor(
+    private readonly cdp: CDPSession,
+    private readonly onAttached: (send: ChildSend, info: ChildTargetInfo) => Promise<void>,
+  ) {}
+
+  async start(): Promise<void> {
+    this.cdp.on('Target.attachedToTarget', (event) => this.attached([event.sessionId], event.targetInfo));
+    this.cdp.on('Target.receivedMessageFromTarget', (event) => this.received([event.sessionId], parse(event.message)));
+    await this.cdp.send('Target.setAutoAttach', AUTO_ATTACH);
+  }
+
+  private attached(path: string[], info: ChildTargetInfo): void {
+    const send: ChildSend = (method, params) => this.send(path, method, params);
+    this.onAttached(send, info)
+      .catch((error: Error) => log(`child target ${info.type} ${info.url}: ${error.message}`))
+      .finally(() => void send('Runtime.runIfWaitingForDebugger'));
+  }
+
+  private received(path: string[], message: CdpMessage | undefined): void {
+    if (!message) return;
+    if (message.id !== undefined) {
+      const resolve = this.pending.get(message.id);
+      if (resolve) {
+        this.pending.delete(message.id);
+        resolve(message);
+      }
+      return;
+    }
+    const params = (message.params ?? {}) as { sessionId?: string; message?: string; targetInfo?: ChildTargetInfo };
+    if (message.method === 'Target.receivedMessageFromTarget' && params.sessionId && params.message) {
+      this.received([...path, params.sessionId], parse(params.message));
+    } else if (message.method === 'Target.attachedToTarget' && params.sessionId && params.targetInfo) {
+      this.attached([...path, params.sessionId], params.targetInfo);
+    }
+  }
+
+  /** Sends one command down `path` (session ids from the page outwards) and waits for its reply. */
+  private send(path: string[], method: string, params: Record<string, unknown> = {}): Promise<CdpMessage> {
+    const id = this.nextId++;
+    const envelope = path.reduceRight<CdpMessage>(
+      (inner, sessionId) => ({ method: 'Target.sendMessageToTarget', params: { sessionId, message: JSON.stringify(inner) } }),
+      { id, method, params },
+    );
+    return new Promise((resolve) => {
+      const fail = (message: string): void => {
+        this.pending.delete(id);
+        resolve({ id, error: { message } });
+      };
+      const timer = setTimeout(() => fail('no reply within 10 s'), 10_000);
+      timer.unref();
+      this.pending.set(id, (reply) => {
+        clearTimeout(timer);
+        resolve(reply);
+      });
+      this.cdp
+        .send(envelope.method as 'Target.sendMessageToTarget', envelope.params as { sessionId: string; message: string })
+        .catch((error: Error) => {
+          clearTimeout(timer);
+          fail(error.message);
+        });
+    });
+  }
+}
+
+function parse(message: string): CdpMessage | undefined {
+  try {
+    return JSON.parse(message) as CdpMessage;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Owns the Playwright browser for the lifetime of the MCP server: lazy launch,
  * tab bookkeeping, dialog tracking and per-page console/network logs.
@@ -241,6 +345,14 @@ export class BrowserSession {
         config.headless ? 'headless' : 'headed'
       } mode`,
     );
+
+    const emulation = config.browser === 'chromium' && config.userAgent ? platformEmulationFor(config.userAgent) : undefined;
+    if (emulation && emulation.metadata.platform !== HOST_PLATFORM) {
+      log(
+        `--user-agent names ${emulation.metadata.platform} on a ${HOST_PLATFORM} host: pages and iframes report ${emulation.platform}, ` +
+          `but navigator.platform inside web workers keeps the host value (Chrome ignores the override there)`,
+      );
+    }
 
     let context: BrowserContext;
     if (config.userDataDir) {
@@ -497,20 +609,30 @@ export class BrowserSession {
    * With a user-agent override on Chromium, also report the matching navigator.platform and
    * client hints, which Playwright's own override leaves at the host OS. Applied through a CDP
    * session that stays attached: Chromium drops emulation state when its session detaches.
+   * Cross-origin iframes are separate targets with their own emulation state, so the override is
+   * repeated on every child target the page attaches (see ChildTargets). Dedicated workers cannot
+   * be aligned: Chrome accepts the override on a worker session but keeps the host platform.
    */
   private async alignPlatform(page: Page): Promise<void> {
     const { config } = this;
     if (config.browser !== 'chromium' || !config.userAgent) return;
     const emulation = platformEmulationFor(config.userAgent);
     if (!emulation) return;
+    const override = {
+      userAgent: config.userAgent,
+      acceptLanguage: config.locale,
+      platform: emulation.platform,
+      userAgentMetadata: emulation.metadata,
+    };
     try {
       const cdp = await page.context().newCDPSession(page);
-      await cdp.send('Emulation.setUserAgentOverride', {
-        userAgent: config.userAgent,
-        acceptLanguage: config.locale,
-        platform: emulation.platform,
-        userAgentMetadata: emulation.metadata,
-      });
+      await cdp.send('Emulation.setUserAgentOverride', override);
+      await new ChildTargets(cdp, async (send, info) => {
+        if (info.type !== 'iframe') return;
+        const reply = await send('Emulation.setUserAgentOverride', override);
+        if (reply.error) log(`platform alignment failed for iframe ${info.url}: ${reply.error.message}`);
+        await send('Target.setAutoAttach', AUTO_ATTACH);
+      }).start();
     } catch (error) {
       if (!page.isClosed()) log(`platform alignment failed: ${(error as Error).message}`);
     }
