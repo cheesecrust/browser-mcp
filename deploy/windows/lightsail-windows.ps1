@@ -21,21 +21,15 @@
 # Progress is written to C:\browser-mcp-setup.log. Re-running the script is safe; it keeps an existing .env.
 #
 # Afterwards: point the DNS A record of $DOMAIN at the instance's static IP, open only 80, 443 and
-# 3389 (RDP, ideally restricted to your IP) in the Lightsail firewall, and register
-# https://$DOMAIN/oauth/kakao/callback as a Redirect URI in Kakao Developers.
+# 3389 (RDP, ideally restricted to your IP) in the Lightsail firewall.
 # When you disconnect RDP, run deploy\windows\disconnect-rdp.cmd instead of closing the window, so the
 # desktop keeps rendering for Chrome (a plain disconnect locks the session and screenshots go blank).
 
 # ---- settings ------------------------------------------------------------------
 $DOMAIN = "browser.example.com"           # public host name whose DNS A record points at this instance
-$KAKAO_CLIENT_ID = ""                     # Kakao Developers > app > platform keys > REST API key
-$KAKAO_CLIENT_SECRET = ""                 # Kakao Developers > app > Kakao Login > Security > Client Secret
-$ALLOWED_USERS = ""                       # Kakao user ids and/or e-mails, comma separated; "*" allows everyone
-$KAKAO_SCOPE = ""                         # e.g. "account_email" when allowing users by e-mail
 $STATIC_TOKENS = ""                       # optional "token:user,token2:user2" (16+ character random tokens)
 $ISSUE_TOKENS = $false                    # $true: the server issues tokens via POST /tokens and lists them via GET /tokens
 $ADMIN_TOKEN = ""                         # secret (16+ characters) required to call /tokens; empty = open endpoint (sandbox only)
-$OAUTH_CLIENTS = ""                       # optional pre-registered OAuth clients for PlayMCP: "id:secret[:redirect_uri]"
 $AUTOLOGON_USER = "Administrator"         # account whose desktop hosts the browser
 $AUTOLOGON_PASSWORD = ""                  # its password (Lightsail: instance page > Connect > Retrieve default password);
                                           # stored in the registry for automatic logon after a reboot; empty = no auto-logon,
@@ -60,8 +54,8 @@ try {
   Step "browser-mcp Windows setup started $(Get-Date -Format s)"
 
   if (-not $DOMAIN -or $DOMAIN -eq "browser.example.com") { throw "set DOMAIN to your real host name before running the script" }
-  if (-not $KAKAO_CLIENT_ID -and -not $STATIC_TOKENS -and -not $ISSUE_TOKENS) {
-    throw "set KAKAO_CLIENT_ID (and KAKAO_CLIENT_SECRET), STATIC_TOKENS or ISSUE_TOKENS = `$true, otherwise nobody can log in"
+  if (-not $STATIC_TOKENS -and -not $ISSUE_TOKENS) {
+    throw "set STATIC_TOKENS or ISSUE_TOKENS = `$true, otherwise nobody can log in"
   }
   if ($ADMIN_TOKEN -and $ADMIN_TOKEN.Length -lt 16) { throw "ADMIN_TOKEN must be at least 16 characters" }
   $me = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -114,14 +108,9 @@ try {
       "BROWSER_MCP_BROWSER_ARGS=--disable-blink-features=AutomationControlled",
       "BROWSER_MCP_LOCALE=ko-KR"
     )
-    if ($KAKAO_CLIENT_ID) { $lines += "BROWSER_MCP_KAKAO_CLIENT_ID=$KAKAO_CLIENT_ID" }
-    if ($KAKAO_CLIENT_SECRET) { $lines += "BROWSER_MCP_KAKAO_CLIENT_SECRET=$KAKAO_CLIENT_SECRET" }
-    if ($ALLOWED_USERS) { $lines += "BROWSER_MCP_ALLOWED_USERS=$ALLOWED_USERS" }
-    if ($KAKAO_SCOPE) { $lines += "BROWSER_MCP_KAKAO_SCOPE=$KAKAO_SCOPE" }
     if ($STATIC_TOKENS) { $lines += "BROWSER_MCP_TOKENS=$STATIC_TOKENS" }
     if ($ISSUE_TOKENS) { $lines += "BROWSER_MCP_ISSUE_TOKENS=1" }
     if ($ADMIN_TOKEN) { $lines += "BROWSER_MCP_ADMIN_TOKEN=$ADMIN_TOKEN" }
-    if ($OAUTH_CLIENTS) { $lines += "BROWSER_MCP_OAUTH_CLIENTS=$OAUTH_CLIENTS" }
     Set-Content -Path "$APP_DIR\.env" -Value $lines -Encoding ASCII
     # Only administrators may read the secrets.
     icacls "$APP_DIR\.env" /inheritance:r /grant:r "Administrators:F" /grant:r "SYSTEM:F" /grant:r "${AUTOLOGON_USER}:R" | Out-Null

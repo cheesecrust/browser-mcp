@@ -7,7 +7,7 @@ AI 에이전트(Claude Code, Claude Desktop, Cursor 등)가 **실제 브라우�
 - 모든 액션이 **변경된 페이지 스냅샷을 함께 반환**하므로 왕복 횟수가 적음
 - 스크린샷, 텍스트 추출, JavaScript 실행, 탭 관리, 다이얼로그 처리, 네트워크 로그 조회 (콘솔 로그는 Firefox/WebKit에서만, [아래 참고](#patchright-제약))
 - 헤드리스/헤디드, Chromium/Firefox/WebKit, 설치된 Chrome 사용, 로그인 유지용 영속 프로필 지원
-- **원격(HTTP) 모드**: 서버 한 대를 여러 사람이 카카오 로그인(또는 고정 토큰)으로 나눠 쓰고, 사용자별로 브라우저·로그인 상태가 분리됨 ([아래 참고](#원격http-모드-서버-한-대를-여러-사람이-쓰기))
+- **원격(HTTP) 모드**: 서버 한 대를 여러 사람이 토큰으로 나눠 쓰고, 사용자별로 브라우저·로그인 상태가 분리됨 ([아래 참고](#원격http-모드-서버-한-대를-여러-사람이-쓰기))
 
 ## 요구 사항
 
@@ -110,32 +110,9 @@ claude mcp add --scope user browser -- node /path/to/browser-mcp/dist/index.js -
 세션마다 Chromium이 따로 떠서 탭과 쿠키가 섞이지 않습니다. 사용자는 Bearer 토큰으로 식별되고,
 로그인 상태(쿠키·스토리지)는 사용자별로 저장돼 다음 세션에서 이어집니다.
 
-### 서버 실행: 카카오 로그인
-
-사용자가 각자 카카오계정으로 로그인하고, 서버는 허용 목록에 있는 계정에게만 토큰을 발급합니다.
-MCP 표준 OAuth 흐름이라 Claude Code 등은 서버 주소만 등록하면 브라우저 창에서 카카오 로그인이 열립니다.
-
-1. [Kakao Developers](https://developers.kakao.com)에서 애플리케이션을 만들고 **앱 키 → REST API 키**를 확인합니다.
-2. **제품 설정 → 카카오 로그인**을 켜고, Redirect URI에 `https://<호스트>/oauth/kakao/callback`을 등록합니다.
-3. **카카오 로그인 → 보안**에서 Client Secret을 생성해 활성화합니다.
-4. 이메일로 사용자를 허용하려면 **동의항목**에서 카카오계정(이메일)을 켜고 `BROWSER_MCP_KAKAO_SCOPE=account_email`을 설정합니다. 카카오 회원번호(id)로 허용하면 동의항목 설정이 필요 없습니다.
-
-```bash
-BROWSER_MCP_PUBLIC_URL=https://<호스트> \
-BROWSER_MCP_KAKAO_CLIENT_ID=<REST API 키> \
-BROWSER_MCP_KAKAO_CLIENT_SECRET=<Client Secret> \
-BROWSER_MCP_ALLOWED_USERS="123456789,someone@example.com" \
-node dist/index.js --http --host 0.0.0.0 --port 3000
-```
-
-- `BROWSER_MCP_ALLOWED_USERS`에는 카카오 회원번호와 이메일을 섞어 쓸 수 있고 `*`를 주면 모든 카카오계정을 허용합니다. 목록에 없는 계정이 로그인하면 거부되고, 서버 로그에 `login denied: Kakao id 123456789 (닉네임)`처럼 회원번호가 남으므로 그 값을 목록에 추가하면 됩니다.
-- 발급된 토큰은 해시로만 `<data-dir>/auth/`에 저장되고, 액세스 토큰은 기본 24시간(`--access-token-ttl`), 리프레시 토큰은 30일 뒤 만료됩니다. 리프레시는 자동으로 일어나므로 사용자는 한 달에 한 번 정도만 다시 로그인합니다.
-- `--public-url`은 클라이언트가 보는 주소이며 https여야 합니다(루프백 주소만 http 허용). 카카오 쪽에 등록하는 Redirect URI와 같은 호스트여야 합니다.
-- 사용자 디렉터리는 `users/kakao-<회원번호>/`로 만들어지고 `profile.json`에 닉네임과 이메일이 기록됩니다.
-
 ### 서버 실행: 고정 토큰
 
-카카오 로그인 대신, 또는 함께 쓸 수 있습니다. 토큰은 16자 이상의 무작위 문자열이면 되고, 환경 변수 또는 JSON 파일로 넘깁니다.
+토큰은 16자 이상의 무작위 문자열이면 되고, 환경 변수 또는 JSON 파일로 넘깁니다.
 
 ```bash
 # 토큰 생성
@@ -148,7 +125,7 @@ BROWSER_MCP_TOKENS="<토큰1>:alice,<토큰2>:bob" node dist/index.js --http --h
 node dist/index.js --http --host 0.0.0.0 --tokens-file tokens.json
 ```
 
-HTTP 모드는 기본적으로 헤드리스이며(화면이 있는 서버라면 `--headed`로 창을 띄울 수 있음), 카카오 로그인도 토큰도 없이는 127.0.0.1에서만(`--allow-unauthenticated`) 뜹니다.
+HTTP 모드는 기본적으로 헤드리스이며(화면이 있는 서버라면 `--headed`로 창을 띄울 수 있음), 토큰 없이는 127.0.0.1에서만(`--allow-unauthenticated`) 뜹니다.
 토큰을 미리 파일에 적어 두는 대신 서버가 발급하게 할 수도 있습니다. `--issue-tokens`를 켜면 브라우저로 `https://<호스트>/tokens`를 열어 토큰을 발급·회수할 수 있는 페이지가 나오고(토큰 값은 발급 직후 한 번만 표시), 같은 주소가 스크립트용 JSON API이기도 합니다. `POST /tokens`가 겹치지 않는 임의 토큰을 만들어 돌려주고, `GET /tokens`로 지금까지 발급한 토큰을 다시 볼 수 있습니다. 발급 내역은 `<data-dir>/issued-tokens.json`(0600)에 토큰 원문째 저장되므로 이 파일과 관리자 비밀은 샌드박스 밖으로 내보내지 마세요. 발급된 토큰만 통과하며, 토큰마다 별도 사용자(워크스페이스·세션)가 됩니다.
 
 ```bash
@@ -187,11 +164,10 @@ docker compose --profile https up -d --build   # Caddy가 $DOMAIN 의 인증서�
 `deploy/lightsail-launch.sh`를 인스턴스 생성 화면의 **시작 스크립트**(Lightsail) 또는 **사용자 데이터**(EC2)에 붙여 넣으면,
 첫 부팅 때 Docker 설치, 저장소 복제, `.env` 작성, HTTPS 포함 실행까지 혼자 끝냅니다. 노트북에서 SSH를 열 일이 없습니다.
 
-1. 스크립트 위쪽의 설정값을 채웁니다: `DOMAIN`, `KAKAO_CLIENT_ID`, `KAKAO_CLIENT_SECRET`, `ALLOWED_USERS` (고정 토큰만 쓰면 `STATIC_TOKENS`, 서버가 발급하게 하려면 `ISSUE_TOKENS="true"`와 `ADMIN_TOKEN`).
+1. 스크립트 위쪽의 설정값을 채웁니다: `DOMAIN`과 `STATIC_TOKENS` (서버가 발급하게 하려면 대신 `ISSUE_TOKENS="true"`와 `ADMIN_TOKEN`).
 2. Ubuntu 24.04, 4 GB 이상 플랜으로 인스턴스를 만들면서 스크립트를 붙여 넣습니다. 2 GB 플랜이면 스크립트가 스왑을 추가합니다.
 3. 고정 IP를 붙이고 도메인의 A 레코드를 그 IP로 설정합니다. 방화벽은 80, 443만 엽니다(SSH 규칙은 지우거나 Lightsail 브라우저 클라이언트로만 제한).
-4. Kakao Developers의 Redirect URI에 `https://<도메인>/oauth/kakao/callback`을 등록합니다.
-5. 몇 분 뒤 `https://<도메인>/healthz`가 `{"ok":true,...}`를 돌려주면 완료입니다.
+4. 몇 분 뒤 `https://<도메인>/healthz`가 `{"ok":true,...}`를 돌려주면 완료입니다.
 
 진행 상황은 `/var/log/browser-mcp-setup.log`에 남고, 콘솔의 브라우저 SSH에서 `docker compose -f /opt/browser-mcp/docker-compose.yml logs -f`로 서버 로그를 볼 수 있습니다.
 Lightsail은 시작 스크립트를 자기 래퍼 안에서 `/bin/sh`로 실행하므로 이 스크립트는 bash 전용 문법 없이 POSIX sh로 유지합니다.
@@ -219,12 +195,12 @@ cd /opt/browser-mcp && sudo docker compose --profile https up -d
 
 1. Windows Server 2022, 4 GB 이상 플랜으로 인스턴스를 만들고 고정 IP를 붙인 뒤 도메인의 A 레코드를 그 IP로 설정합니다. Lightsail 방화벽은 80, 443과 RDP 3389(가능하면 내 IP로 제한)만 엽니다.
 2. 인스턴스 페이지 **Connect**에서 기본 Administrator 비밀번호를 확인하고 RDP로 접속합니다.
-3. `deploy/windows/lightsail-windows.ps1`을 인스턴스로 복사해 위쪽 설정값(`DOMAIN`, `KAKAO_CLIENT_ID`, `KAKAO_CLIENT_SECRET`, `ALLOWED_USERS`, `AUTOLOGON_PASSWORD` 등)을 채우고, 관리자 PowerShell에서 실행합니다.
+3. `deploy/windows/lightsail-windows.ps1`을 인스턴스로 복사해 위쪽 설정값(`DOMAIN`, `STATIC_TOKENS` 또는 `ISSUE_TOKENS`·`ADMIN_TOKEN`, `AUTOLOGON_PASSWORD` 등)을 채우고, 관리자 PowerShell에서 실행합니다.
    ```powershell
    Set-ExecutionPolicy Bypass -Scope Process -Force; .\lightsail-windows.ps1
    ```
    Chocolatey로 Git, Node.js LTS, Chrome, Caddy를 설치하고 `C:\browser-mcp`에 저장소를 받아 빌드한 뒤 `.env`를 쓰고 예약 작업 세 개를 등록합니다: `browser-mcp server`(사용자 로그온 시, `deploy\windows\run-server.ps1`), `browser-mcp caddy`(부팅 시 SYSTEM, HTTPS), `browser-mcp update`(매시간, 브랜치가 바뀌면 재빌드). 진행 로그는 `C:\browser-mcp-setup.log`, 서버 로그는 `C:\browser-mcp\logs\server.log`입니다.
-4. Kakao Developers의 Redirect URI에 `https://<도메인>/oauth/kakao/callback`을 등록하고 `https://<도메인>/healthz`를 확인합니다.
+4. `https://<도메인>/healthz`가 응답하면 완료입니다.
 
 Windows에서만 다른 점:
 
@@ -235,75 +211,37 @@ Windows에서만 다른 점:
 
 ### 클라이언트 등록
 
-카카오 로그인을 쓰는 서버는 주소만 등록하면 됩니다. 첫 연결 때 클라이언트가 브라우저로 카카오 로그인 창을 열고, 이후에는 토큰을 알아서 갱신합니다.
+토큰은 헤더로 넘깁니다. `Authorization: Bearer <토큰>`이 기본이고, 헤더 형식을 정해 둔 게이트웨이를 위해 `Authorization: <토큰>`과 `X-API-Key: <토큰>`도 받습니다.
 
 ```bash
-# Claude Code (카카오 로그인)
-claude mcp add --transport http --scope user browser https://<호스트>/mcp
-```
-
-```toml
-# Codex (~/.codex/config.toml, 카카오 로그인)
-[mcp_servers.browser]
-url = "https://<호스트>/mcp"
-```
-
-고정 토큰을 쓰는 서버는 헤더로 토큰을 넘깁니다. `Authorization: Bearer <토큰>`이 기본이고, 헤더 형식을 정해 둔 게이트웨이를 위해 `Authorization: <토큰>`과 `X-API-Key: <토큰>`도 받습니다.
-
-```bash
-# Claude Code (고정 토큰)
+# Claude Code
 claude mcp add --transport http --scope user browser https://<호스트>/mcp --header "Authorization: Bearer <토큰>"
 ```
 
 ```toml
-# Codex (~/.codex/config.toml, 고정 토큰)
+# Codex (~/.codex/config.toml)
 [mcp_servers.browser]
 url = "https://<호스트>/mcp"
 bearer_token_env_var = "BROWSER_MCP_TOKEN"   # 토큰을 담은 환경 변수 이름
 ```
 
 ```json
-// Cursor 등 JSON 설정 (고정 토큰)
+// Cursor 등 JSON 설정
 { "mcpServers": { "browser": { "url": "https://<호스트>/mcp", "headers": { "Authorization": "Bearer <토큰>" } } } }
 ```
 
-ChatGPT 웹과 Claude.ai의 커스텀 커넥터는 OAuth 서버를 요구하므로 카카오 로그인을 켠 서버에 연결할 수 있습니다. 두 서비스 모두 공개 HTTPS 주소가 필요합니다.
+ChatGPT 웹과 Claude.ai의 커스텀 커넥터는 OAuth 서버를 요구하므로, 토큰만 받는 이 서버에는 연결할 수 없습니다.
 
-### PlayMCP에 등록하기
+### 채팅용 엔드포인트 `/mcp/lite`
 
-[PlayMCP](https://playmcp.kakao.com)의 서버 개발 가이드는 Streamable HTTP 원격 서버, 서버당 툴 20개 이하(권장 3~10개), 모든 툴의 `annotations`(title과 네 가지 hint), 텍스트만 담은 응답, 세션 없는(stateless) 호출을 요구하거나 권장합니다. 그래서 채팅용 엔드포인트가 따로 있습니다.
+채팅 UI 쪽 게이트웨이는 보통 툴 수 제한, 텍스트만 담은 응답, 세션 없는(stateless) 호출을 요구합니다. 그래서 채팅용 엔드포인트가 따로 있습니다.
 
 | 엔드포인트 | 툴 | 용도 |
 |---|---|---|
 | `https://<호스트>/mcp` | 25개 전체 | Claude Code, Codex, Cursor 같은 코딩 에이전트 |
-| `https://<호스트>/mcp/lite` | 17개 (스크린샷·스크립트 실행·파일 업로드·콘솔/네트워크 조회 제외) | PlayMCP 등 채팅 UI |
+| `https://<호스트>/mcp/lite` | 17개 (스크린샷·스크립트 실행·파일 업로드·콘솔/네트워크 조회 제외) | 채팅 UI |
 
-두 주소는 같은 카카오 로그인과 같은 브라우저를 씁니다. 세션 ID 없이 들어온 `tools/call`도 그 사용자의 브라우저로 처리되므로, 세션을 유지하지 않는 게이트웨이에서도 대화가 이어지는 동안 같은 탭을 계속 다룹니다. `/mcp/lite`는 토큰 없는 `initialize`, `tools/list`, `ping`에도 답하므로 콘솔의 **정보 불러오기**가 로그인 전에 통과하고, 도구 실행(`tools/call`)만 카카오 로그인이 필요합니다. `Accept`에 `text/event-stream`이 없는 단순한 클라이언트에는 이벤트 스트림 대신 JSON으로 응답합니다.
-
-등록 순서:
-
-1. [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector)로 `https://<호스트>/mcp/lite`에 연결해 카카오 로그인과 툴 목록을 미리 확인합니다(가이드가 요구하는 사전 점검).
-2. PlayMCP는 OAuth 클라이언트 ID와 비밀값을 미리 받는 방식이므로 서버 `.env`에 클라이언트를 적어 두고 재시작합니다. 비밀값은 `openssl rand -hex 32`처럼 임의로 만듭니다. Redirect URI는 아직 모르니 비워 둡니다.
-   ```
-   BROWSER_MCP_OAUTH_CLIENTS=playmcp:<비밀값>
-   ```
-3. PlayMCP 개발자 콘솔에서 **새로운 MCP 서버 등록**: 식별자(영문·숫자만, `kakao` 포함 불가), 엔드포인트 URL `https://<호스트>/mcp/lite`를 넣고 **정보 불러오기**로 툴 17개가 보이는지 확인합니다. 인증 방식은 OAuth를 고르고 아래처럼 채운 뒤 **임시 등록**합니다.
-
-   | 항목 | 값 |
-   |---|---|
-   | Client ID | `playmcp` (`.env`에 적은 id) |
-   | Client Secret | `.env`에 적은 비밀값 |
-   | Authorization Endpoint URL | `https://<호스트>/authorize` |
-   | Token Endpoint URL | `https://<호스트>/token` |
-   | Scope | `browser` |
-   | Grant Type | Authorization Code |
-
-4. 등록 후 PlayMCP가 메일로 보내주는 **Redirect URI**를 24시간 안에 `.env`에 추가하고 재시작합니다(`docker compose --profile https up -d`). 여러 개면 `|`로 잇고, 정확한 주소를 모르면 `https://playmcp.kakao.com/*`처럼 `*`로 끝나는 접두어도 됩니다. 이 클라이언트는 비밀값으로 자신을 증명하므로 PKCE 없이도 로그인할 수 있고, 토큰 요청은 `client_secret_post`와 `client_secret_basic` 둘 다 받습니다.
-   ```
-   BROWSER_MCP_OAUTH_CLIENTS=playmcp:<비밀값>:https://playmcp.kakao.com/<메일에 적힌 경로>
-   ```
-5. **도구함에 추가**해 AI 채팅에서 테스트한 뒤 **등록 및 심사 요청**을 보내고, 승인되면 공개 상태를 **전체 공개**로 바꿉니다.
-6. 툴 이름이나 설명을 바꾸면 콘솔의 **정보 불러오기**를 다시 눌러 재심사를 받아야 PlayMCP 화면에 반영됩니다.
+두 주소는 같은 토큰과 같은 브라우저를 씁니다. 세션 ID 없이 들어온 `tools/call`도 그 사용자의 브라우저로 처리되므로, 세션을 유지하지 않는 게이트웨이에서도 대화가 이어지는 동안 같은 탭을 계속 다룹니다. `/mcp/lite`는 토큰 없는 `initialize`, `tools/list`, `ping`에도 답하므로 게이트웨이의 사전 점검(툴 목록 불러오기)이 토큰 설정 전에 통과하고, 도구 실행(`tools/call`)만 토큰이 필요합니다. `Accept`에 `text/event-stream`이 없는 단순한 클라이언트에는 이벤트 스트림 대신 JSON으로 응답합니다.
 
 ### 동작과 제한
 
@@ -313,7 +251,7 @@ ChatGPT 웹과 Claude.ai의 커스텀 커넥터는 OAuth 서버를 요구하므�
 - **사람에게 넘기기**: 로그인, 2단계 인증, 보안 문자(CAPTCHA)처럼 AI가 대신 해서는 안 되는 단계는 `browser_request_human`으로 처리합니다. 도구가 `https://<호스트>/view/<임의 코드>` 링크를 돌려주면 사람이 그 링크를 열어 서버 브라우저의 화면을 실시간으로 보면서 마우스와 키보드로 직접 조작하고, **완료**를 누르면 AI가 같은 브라우저로 이어서 진행합니다. 링크는 토큰 없이 열리지만 해당 사용자의 브라우저에만 연결되고 기본 10분(최대 30분) 뒤나 완료 시점에 만료됩니다. 로그인 상태는 평소처럼 사용자 데이터에 저장되므로 다음 호출부터는 사람이 다시 개입할 필요가 없습니다. 화면은 Chromium의 screencast(다른 엔진은 스크린샷 폴링)를 Server-Sent Events로 보내고, 입력은 작은 JSON 요청으로 돌아옵니다. 미리 로그인해 두려면 로컬에서 로그인한 뒤 Playwright storage state 파일을 `<data-dir>/users/<user>/storage-state.json`으로 복사해도 됩니다.
 - **저장된 로그인(금고)**: 세션이 자주 끊기는 사이트는 아이디와 비밀번호를 서버 금고에 넣어 둘 수 있습니다. `browser_request_credentials`가 돌려주는 `https://<호스트>/secrets/<임의 코드>` 링크(10분 유효)에서 사람이 사이트 주소·아이디·비밀번호를 저장하면, 서버가 AES-256-GCM으로 봉인해 `<data-dir>/users/<user>/credentials.json`에 둡니다. AI에게는 이름, 도메인, 가려진 아이디(`al***m`)만 보이고 값은 절대 돌려주지 않습니다. 입력은 `browser_fill_credential`이 서버 안에서 하며, 활성 탭이 저장 때 적은 도메인(`naver.com`이면 `nid.naver.com` 같은 하위 도메인 포함)의 HTTPS 페이지일 때만 동작하므로 다른 사이트로 새어 나갈 수 없습니다. 봉인 키는 처음 실행 때 `<data-dir>/vault.key`에 만들어지며(`--vault-key`로 직접 줄 수도 있음) 이 키를 잃으면 저장된 로그인도 못 읽습니다. 서버 자체가 뚫리면 키와 함께 노출되는 구조이므로 중요한 계정보다는 반복 로그인이 번거로운 서비스에 쓰고, 2단계 인증이나 보안 문자는 여전히 사람에게 넘기기로 처리합니다.
 - **로그**: 도구 호출마다 `user=… session=… tool=… ok=… ms=… url=…` 한 줄이 stderr에 남습니다.
-- **프로토콜**: Streamable HTTP입니다. `initialize`로 세션(`Mcp-Session-Id`)을 여는 클라이언트(Claude Code, Codex, Cursor, OpenAI Responses API)와, 세션 없이 요청마다 `tools/call`만 보내는 게이트웨이(PlayMCP 등) 모두 지원합니다.
+- **프로토콜**: Streamable HTTP입니다. `initialize`로 세션(`Mcp-Session-Id`)을 여는 클라이언트(Claude Code, Codex, Cursor, OpenAI Responses API)와, 세션 없이 요청마다 `tools/call`만 보내는 게이트웨이 모두 지원합니다.
 
 ## 실행 옵션
 
@@ -351,15 +289,9 @@ ChatGPT 웹과 Claude.ai의 커스텀 커넥터는 OAuth 서버를 요구하므�
 | `--idle-timeout <sec>` | `BROWSER_MCP_IDLE_TIMEOUT` | `900` | 유휴 세션 종료 시간 |
 | `--max-sessions <n>` | `BROWSER_MCP_MAX_SESSIONS` | `20` | 동시에 뜨는 브라우저 수(사용자당 하나) |
 | `--max-sessions-per-user <n>` | `BROWSER_MCP_MAX_SESSIONS_PER_USER` | `10` | 사용자당 MCP 세션 수. 넘으면 가장 오래 쉰 세션이 닫힘 |
-| `--oauth-clients <spec>` | `BROWSER_MCP_OAUTH_CLIENTS` | | 미리 등록하는 OAuth 클라이언트 `id:secret[:redirect_uri\|...]`, 여러 개는 `;`로 구분 (PlayMCP용) |
 | `--allow-private-network` | `BROWSER_MCP_ALLOW_PRIVATE_NETWORK` | stdio: on / http: off | 로컬 파일과 사설망 접근 허용 |
 | `--vault-key <hex>` | `BROWSER_MCP_VAULT_KEY` | `<data-dir>/vault.key` 자동 생성 | 저장된 로그인을 봉인하는 32바이트 16진수 키 |
-| `--public-url <url>` | `BROWSER_MCP_PUBLIC_URL` | | 클라이언트가 보는 서버 주소 (카카오 로그인에 필수) |
-| `--kakao-client-id <key>` | `BROWSER_MCP_KAKAO_CLIENT_ID` | | 카카오 앱의 REST API 키. 지정하면 카카오 로그인 활성화 |
-| `--kakao-client-secret <s>` | `BROWSER_MCP_KAKAO_CLIENT_SECRET` | | 카카오 앱의 Client Secret (환경 변수 권장) |
-| `--kakao-scope <scopes>` | `BROWSER_MCP_KAKAO_SCOPE` | | 요청할 동의항목 (`account_email` 등) |
-| `--allowed-users <list>` | `BROWSER_MCP_ALLOWED_USERS` | (없음) | 허용할 카카오 회원번호·이메일, `*`는 전체 허용 |
-| `--access-token-ttl <sec>` | `BROWSER_MCP_ACCESS_TOKEN_TTL` | `86400` | 발급 토큰 유효 시간 |
+| `--public-url <url>` | `BROWSER_MCP_PUBLIC_URL` | | 사람에게 주는 링크(넘기기, 금고)에 쓰는 서버 주소. 없으면 요청이 들어온 주소를 씀 |
 
 예: 로그인 상태를 유지하면서 설치된 Chrome으로 실행
 
@@ -391,10 +323,9 @@ npm run inspector    # MCP Inspector로 도구를 직접 호출해 보기
 src/
   index.ts          CLI 진입점, stdio 또는 HTTP 모드 선택, 종료 처리
   config.ts         플래그/환경 변수 파싱
-  http.ts           HTTP 모드: 인증, 세션별 브라우저, 유휴 정리, /healthz, OAuth 엔드포인트
+  http.ts           HTTP 모드: 인증, 세션별 브라우저, 유휴 정리, /healthz, /tokens
   handoff.ts        사람에게 넘기기: /view/<code> 뷰어 페이지, 화면 스트리밍, 입력 전달
   vault.ts          저장된 로그인 금고: AES-GCM 봉인, /secrets/<code> 저장 페이지, 도메인 검사
-  oauth.ts          카카오 로그인을 신원 확인으로 쓰는 OAuth 2.1 인증 서버 (등록, 인가, 토큰, 폐기)
   auth.ts           고정 토큰 파일/환경 변수 파싱과 Bearer 검증
   policy.ts         네트워크 정책: 차단 스킴, 사설 IP 판정, DNS 확인
   browser.ts        BrowserSession: 지연 실행, 탭, 다이얼로그, 콘솔/네트워크 로그, 상태 저장, 경로 제한
@@ -412,11 +343,11 @@ test/
   fixture-server.ts 테스트용 로컬 사이트
   smoke.test.ts     stdio 엔드투엔드 스모크 테스트
   http.test.ts      HTTP 모드 테스트 (인증, 격리, 영속성, 정책, 유휴 종료)
-  oauth.test.ts     카카오 로그인 테스트 (가짜 카카오 서버로 SDK 클라이언트의 OAuth 흐름 검증)
 Dockerfile, docker-compose.yml, Caddyfile, .env.example   원격 배포용
 deploy/
   lightsail-launch.sh  Lightsail/EC2 시작 스크립트 (SSH 없이 설치·실행)
   update.sh            브랜치가 바뀌었을 때 다시 빌드 (cron)
+  windows/             Lightsail Windows용 설치 스크립트, 서버 실행 래퍼, 업데이트, Caddyfile
 ```
 
 ## patchright 제약
@@ -444,9 +375,7 @@ patchright는 사이트가 자동화를 탐지하는 데 쓰는 CDP 흔적(`Runt
 - **사내 프록시 환경**: 브라우저는 셸의 `HTTP_PROXY` 환경 변수를 자동으로 따르지 않습니다. 외부 사이트가 열리지 않으면 `--proxy <url>`(또는 `BROWSER_MCP_PROXY`)을 지정하세요.
 - **서버 로그**: 모든 로그는 stderr로만 출력됩니다(stdout은 MCP 프로토콜 채널). Claude Code에서는 `claude mcp list` / 서버 로그로 확인할 수 있습니다.
 - **클라이언트가 종료됐는데 브라우저가 남아 있다면**: 서버는 stdin EOF 또는 SIGTERM을 받으면 브라우저를 닫습니다. 강제 종료(`kill -9`)된 경우에만 남을 수 있습니다.
-- **HTTP 모드에서 `401`**: `Authorization: Bearer <토큰>` 헤더가 없거나 토큰이 틀리거나 만료된 경우입니다. 카카오 로그인 서버라면 클라이언트가 다시 로그인 창을 열고, 고정 토큰이라면 서버의 `BROWSER_MCP_TOKENS`/`--tokens-file`과 같아야 합니다.
-- **카카오 로그인 후 `access_denied ... is not allowed on this server`**: 허용 목록에 없는 계정입니다. 서버 로그의 `login denied: Kakao id ...`에 찍힌 회원번호를 `BROWSER_MCP_ALLOWED_USERS`에 추가하고 서버를 재시작하세요.
-- **카카오 로그인 창에서 `KOE006`(Redirect URI 불일치)**: Kakao Developers에 등록한 Redirect URI가 `<public-url>/oauth/kakao/callback`과 정확히 같은지 확인하세요.
+- **HTTP 모드에서 `401`**: `Authorization: Bearer <토큰>` 헤더가 없거나 토큰이 틀리거나 만료된 경우입니다. 서버의 `BROWSER_MCP_TOKENS`/`--tokens-file`, 또는 `/tokens`로 발급한 값과 같아야 합니다.
 - **HTTP 모드에서 `Session not found`**: 유휴 시간이 지나 세션이 닫혔거나 서버가 재시작된 경우입니다. 클라이언트를 다시 연결하면 새 세션이 열리고 로그인 상태는 복원됩니다.
 - **`Cannot open ...: ... private or reserved address`**: 네트워크 정책이 사설망 접근을 막은 것입니다. 사내망 사이트가 대상이면 `--allow-private-network`를 주세요.
 - **Lightsail에서 `/var/log/browser-mcp-setup.log`가 없다면**: 시작 스크립트가 실행되지 않은 것입니다. `sudo tail /var/log/cloud-init-output.log`로 원인을 보고, 위의 "직접 받아 실행" 방법으로 설치하세요.

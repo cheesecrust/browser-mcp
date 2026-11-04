@@ -4,7 +4,6 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { loadTokens, type TokenEntry } from './auth.js';
 import { ConfigError } from './errors.js';
-import { parseStaticClients, type StaticClient } from './oauth.js';
 
 export { ConfigError } from './errors.js';
 
@@ -68,25 +67,13 @@ export interface Config {
   /** Let the browser reach local files and private networks (default on for stdio, off for HTTP). */
   allowPrivateNetwork: boolean;
 
-  // ---- Kakao Login (OAuth) -------------------------------------------------------
-
-  /** Public base URL of this server as clients see it, e.g. https://browser.example.com (no trailing slash). */
+  /**
+   * Base URL written into links handed to people (hand-over, saved logins), e.g. https://browser.example.com
+   * without a trailing slash; by default the origin each request came in on.
+   */
   publicUrl?: string;
   /** 32-byte hex key that seals saved logins; by default one is created in <data-dir>/vault.key. */
   vaultKey?: string;
-  /** REST API key of the Kakao app; when set, clients log in with their Kakao account. */
-  kakaoClientId?: string;
-  kakaoClientSecret?: string;
-  /** Comma-separated Kakao consent items to request, e.g. "account_email". */
-  kakaoScope?: string;
-  /** Pre-registered confidential OAuth clients, for services such as PlayMCP that ask for a client id and secret. */
-  oauthClients: StaticClient[];
-  /** Kakao user ids and/or e-mail addresses that may use the server; "*" allows every Kakao account. */
-  allowedUsers: string[];
-  /** Lifetime of access tokens issued after Kakao login, in milliseconds. */
-  accessTokenTtlMs: number;
-  /** Kakao endpoints; only overridden through environment variables in tests. */
-  kakaoEndpoints: { authorizeUrl: string; tokenUrl: string; userInfoUrl: string };
 }
 
 export const DEFAULTS = {
@@ -102,12 +89,6 @@ export const DEFAULTS = {
   idleTimeoutSeconds: 900,
   maxSessions: 20,
   maxSessionsPerUser: 10,
-  accessTokenTtlSeconds: 24 * 60 * 60,
-  kakaoEndpoints: {
-    authorizeUrl: 'https://kauth.kakao.com/oauth/authorize',
-    tokenUrl: 'https://kauth.kakao.com/oauth/token',
-    userInfoUrl: 'https://kapi.kakao.com/v2/user/me',
-  },
 };
 
 export const USAGE = `browser-mcp ${VERSION} - MCP server that lets an AI control a browser through patchright (Playwright fork)
@@ -154,15 +135,8 @@ Remote (HTTP) mode:
   --max-sessions-per-user <n> Open MCP sessions per user; beyond this the least recently used one is closed (default: ${DEFAULTS.maxSessionsPerUser})
   --allow-private-network    Let the browser open local files and private/loopback addresses (off by default with --http)
   --vault-key <hex>          32-byte hex key that encrypts saved logins (default: created once in <data-dir>/vault.key)
-
-Kakao Login (clients authenticate with a Kakao account instead of static tokens):
-  --public-url <url>         Public base URL of this server, e.g. https://browser.example.com (required)
-  --kakao-client-id <key>    REST API key of the Kakao app
-  --kakao-client-secret <s>  Client secret of the Kakao app (prefer BROWSER_MCP_KAKAO_CLIENT_SECRET)
-  --kakao-scope <scopes>     Consent items to request, comma separated, e.g. account_email
-  --allowed-users <list>     Kakao user ids and/or e-mails allowed to log in, comma separated; "*" allows everyone
-  --oauth-clients <spec>     Pre-registered OAuth clients "id:secret[:redirect_uri|...]" separated by ";" (PlayMCP and similar)
-  --access-token-ttl <sec>   Lifetime of issued access tokens (default: ${DEFAULTS.accessTokenTtlSeconds})
+  --public-url <url>         Base URL written into links handed to people (hand-over, saved logins), e.g.
+                             https://browser.example.com (default: the origin each request came in on)
 
   -h, --help                 Show this help
   -v, --version              Print the version
@@ -176,9 +150,7 @@ BROWSER_MCP_SNAPSHOT_MAX_CHARS, BROWSER_MCP_DOWNLOADS_DIR, BROWSER_MCP_PROXY, BR
 BROWSER_MCP_HTTP, BROWSER_MCP_HOST, BROWSER_MCP_PORT, BROWSER_MCP_TOKENS_FILE,
 BROWSER_MCP_TOKENS ("token1:alice,token2:bob"), BROWSER_MCP_ALLOW_UNAUTHENTICATED, BROWSER_MCP_DATA_DIR,
 BROWSER_MCP_IDLE_TIMEOUT, BROWSER_MCP_MAX_SESSIONS, BROWSER_MCP_MAX_SESSIONS_PER_USER,
-BROWSER_MCP_ALLOW_PRIVATE_NETWORK, BROWSER_MCP_VAULT_KEY, BROWSER_MCP_PUBLIC_URL, BROWSER_MCP_KAKAO_CLIENT_ID,
-BROWSER_MCP_KAKAO_CLIENT_SECRET, BROWSER_MCP_KAKAO_SCOPE, BROWSER_MCP_ALLOWED_USERS,
-BROWSER_MCP_ACCESS_TOKEN_TTL. Command-line flags take precedence.
+BROWSER_MCP_ALLOW_PRIVATE_NETWORK, BROWSER_MCP_VAULT_KEY, BROWSER_MCP_PUBLIC_URL. Command-line flags take precedence.
 `;
 
 export type ParsedArgs = { kind: 'run'; config: Config } | { kind: 'help' } | { kind: 'version' };
@@ -258,12 +230,6 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
         'allow-private-network': { type: 'boolean' },
         'public-url': { type: 'string' },
         'vault-key': { type: 'string' },
-        'kakao-client-id': { type: 'string' },
-        'kakao-client-secret': { type: 'string' },
-        'kakao-scope': { type: 'string' },
-        'allowed-users': { type: 'string' },
-        'oauth-clients': { type: 'string' },
-        'access-token-ttl': { type: 'string' },
       },
     }).values;
   } catch (error) {
@@ -310,8 +276,6 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
   const idleRaw = str('idle-timeout', 'IDLE_TIMEOUT');
   const maxSessionsRaw = str('max-sessions', 'MAX_SESSIONS');
   const maxPerUserRaw = str('max-sessions-per-user', 'MAX_SESSIONS_PER_USER');
-  const accessTtlRaw = str('access-token-ttl', 'ACCESS_TOKEN_TTL');
-  const allowedUsersRaw = str('allowed-users', 'ALLOWED_USERS');
 
   const config: Config = {
     browser,
@@ -351,22 +315,6 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
     allowPrivateNetwork: bool('allow-private-network', 'ALLOW_PRIVATE_NETWORK') ?? !http,
     publicUrl: str('public-url', 'PUBLIC_URL')?.replace(/\/+$/, ''),
     vaultKey: str('vault-key', 'VAULT_KEY'),
-    kakaoClientId: str('kakao-client-id', 'KAKAO_CLIENT_ID'),
-    kakaoClientSecret: str('kakao-client-secret', 'KAKAO_CLIENT_SECRET'),
-    kakaoScope: str('kakao-scope', 'KAKAO_SCOPE'),
-    oauthClients: parseStaticClients(str('oauth-clients', 'OAUTH_CLIENTS') ?? ''),
-    allowedUsers: allowedUsersRaw
-      ? allowedUsersRaw
-          .split(',')
-          .map((entry) => entry.trim())
-          .filter(Boolean)
-      : [],
-    accessTokenTtlMs: (accessTtlRaw ? parsePositiveInt(accessTtlRaw, '--access-token-ttl') : DEFAULTS.accessTokenTtlSeconds) * 1_000,
-    kakaoEndpoints: {
-      authorizeUrl: env.BROWSER_MCP_KAKAO_AUTHORIZE_URL?.trim() || DEFAULTS.kakaoEndpoints.authorizeUrl,
-      tokenUrl: env.BROWSER_MCP_KAKAO_TOKEN_URL?.trim() || DEFAULTS.kakaoEndpoints.tokenUrl,
-      userInfoUrl: env.BROWSER_MCP_KAKAO_USERINFO_URL?.trim() || DEFAULTS.kakaoEndpoints.userInfoUrl,
-    },
   };
 
   if (config.proxyBypass && !config.proxy) {
@@ -392,10 +340,10 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
         '--user-data-dir cannot be used with --http: every session gets its own browser, and logins are kept per user under --data-dir',
       );
     }
-    const hasAuth = config.tokens.length > 0 || config.kakaoClientId !== undefined || config.issueTokens;
+    const hasAuth = config.tokens.length > 0 || config.issueTokens;
     if (!hasAuth && !config.allowUnauthenticated) {
       throw new ConfigError(
-        'HTTP mode needs a way to identify users: Kakao login (--kakao-client-id with --public-url), static tokens (--tokens-file / BROWSER_MCP_TOKENS) ' +
+        'HTTP mode needs a way to identify users: static tokens (--tokens-file / BROWSER_MCP_TOKENS) ' +
           'or server-issued tokens (--issue-tokens). Pass --allow-unauthenticated only for a test server on 127.0.0.1',
       );
     }
@@ -406,8 +354,7 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
       if (!config.issueTokens) throw new ConfigError('--admin-token requires --issue-tokens');
       if (config.adminToken.length < 16) throw new ConfigError('--admin-token must be at least 16 characters');
     }
-    if (config.kakaoClientId) {
-      if (!config.publicUrl) throw new ConfigError('--public-url is required with --kakao-client-id (clients are redirected back to it)');
+    if (config.publicUrl) {
       let parsed: URL;
       try {
         parsed = new URL(config.publicUrl);
@@ -420,11 +367,9 @@ export function parseConfig(argv: readonly string[], env: NodeJS.ProcessEnv = pr
       if (parsed.search || parsed.hash || (parsed.pathname !== '/' && parsed.pathname !== '')) {
         throw new ConfigError('--public-url must be the origin only, without a path (e.g. https://browser.example.com)');
       }
-    } else if (config.kakaoClientSecret || config.kakaoScope || config.allowedUsers.length > 0 || config.oauthClients.length > 0) {
-      throw new ConfigError('--kakao-client-secret, --kakao-scope, --allowed-users and --oauth-clients require --kakao-client-id');
     }
-  } else if (config.allowUnauthenticated || config.issueTokens || config.adminToken || config.tokens.length > 0 || config.kakaoClientId) {
-    throw new ConfigError('--allow-unauthenticated, --issue-tokens, tokens and Kakao login only apply to --http mode');
+  } else if (config.allowUnauthenticated || config.issueTokens || config.adminToken || config.tokens.length > 0) {
+    throw new ConfigError('--allow-unauthenticated, --issue-tokens and tokens only apply to --http mode');
   }
 
   return { kind: 'run', config };

@@ -12,27 +12,24 @@ import { IssueError, IssuedTokenStore } from './issued.js';
 import { tokensPage } from './tokens-page.js';
 import { log } from './log.js';
 import { SecretLinkManager, Vault } from './vault.js';
-import { OAuthServer, type OAuthOutcome } from './oauth.js';
 import { UrlGuard } from './policy.js';
 import { createServer, LITE_TOOLS, type ToolProfile } from './server.js';
 import type { ToolCallInfo } from './tools/common.js';
 
 /**
- * Remote mode. The bearer token (a static token or a Kakao Login access token)
+ * Remote mode. The bearer token (a static token or one issued through /tokens)
  * identifies the user, and every user gets one browser that all of their MCP
  * sessions and session-less requests share:
  * - a POST initialize without Mcp-Session-Id opens a session (Claude Code, Codex,
  *   Cursor and other stateful clients);
  * - any other POST without Mcp-Session-Id is answered statelessly against the same
- *   browser (gateways that do not keep sessions, such as PlayMCP);
+ *   browser (gateways that do not keep sessions);
  * - the browser closes after --idle-timeout without tool calls and relaunches with
  *   the user's saved state on the next call.
- * /mcp serves every tool; /mcp/lite serves the chat-oriented subset. Both paths are
- * OAuth protected resources (see RESOURCE_PATHS in oauth.ts).
+ * /mcp serves every tool; /mcp/lite serves the chat-oriented subset.
  */
 
 const PROFILES: Readonly<Record<string, ToolProfile>> = { '/mcp': 'full', '/mcp/lite': 'lite' };
-const PROTECTED_RESOURCE_PREFIX = '/.well-known/oauth-protected-resource';
 const MAX_FORM_BYTES = 64 * 1024;
 const MAX_MCP_BYTES = 4 * 1024 * 1024;
 /** JSON-RPC methods that reveal nothing but the tool catalogue; /mcp/lite answers them without a token. */
@@ -59,7 +56,6 @@ interface SessionEntry {
 
 interface Principal {
   user: string;
-  display?: string | undefined;
 }
 
 export interface HttpServerHandle {
@@ -183,21 +179,6 @@ function sendJson(res: ServerResponse, status: number, body: unknown, headers: R
   res.end(JSON.stringify(body));
 }
 
-function sendOutcome(res: ServerResponse, outcome: OAuthOutcome): void {
-  switch (outcome.kind) {
-    case 'redirect':
-      res.writeHead(302, { location: outcome.location, 'cache-control': 'no-store' });
-      res.end();
-      return;
-    case 'json':
-      sendJson(res, outcome.status, outcome.body, { ...CORS_HEADERS, 'cache-control': 'no-store', pragma: 'no-cache' });
-      return;
-    case 'html':
-      res.writeHead(outcome.status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-      res.end(outcome.body);
-  }
-}
-
 function rpcError(code: number, message: string): unknown {
   return { jsonrpc: '2.0', error: { code, message }, id: null };
 }
@@ -213,7 +194,7 @@ async function readRaw(req: IncomingMessage, limit: number): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-/** Reads a small OAuth request body as JSON or form data. */
+/** Reads a small request body (the /tokens API) as JSON or form data. */
 async function readBody(req: IncomingMessage): Promise<URLSearchParams | unknown> {
   const text = await readRaw(req, MAX_FORM_BYTES);
   const type = (req.headers['content-type'] ?? '').toLowerCase();
@@ -269,41 +250,14 @@ function setHeader(req: IncomingMessage, name: string, value: string): void {
   if (!found) raw.push(name, value);
 }
 
-function asForm(body: URLSearchParams | unknown): URLSearchParams {
-  if (body instanceof URLSearchParams) return body;
-  const params = new URLSearchParams();
-  if (body && typeof body === 'object') {
-    for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
-      if (typeof value === 'string') params.set(key, value);
-    }
-  }
-  return params;
-}
-
 function withAuth(req: IncomingMessage, authInfo: AuthInfo): void {
   (req as IncomingMessage & { auth?: AuthInfo }).auth = authInfo;
 }
 
 export async function startHttpServer(config: Config): Promise<HttpServerHandle> {
   const tokens = new TokenStore(config.tokens);
-  const oauth = config.kakaoClientId
-    ? new OAuthServer({
-        publicUrl: config.publicUrl!,
-        dataDir: config.dataDir,
-        kakao: {
-          clientId: config.kakaoClientId,
-          clientSecret: config.kakaoClientSecret,
-          scope: config.kakaoScope,
-          ...config.kakaoEndpoints,
-        },
-        allowedUsers: config.allowedUsers,
-        accessTokenTtlMs: config.accessTokenTtlMs,
-        refreshTokenTtlMs: 30 * 24 * 60 * 60 * 1_000,
-        clients: config.oauthClients,
-      })
-    : undefined;
   const issued = config.issueTokens ? new IssuedTokenStore(path.join(config.dataDir, 'issued-tokens.json')) : undefined;
-  const unauthenticated = tokens.size === 0 && !oauth && !issued;
+  const unauthenticated = tokens.size === 0 && !issued;
   const guard = config.allowPrivateNetwork ? undefined : new UrlGuard();
   const handoffs = new HandoffManager({ publicUrl: config.publicUrl });
   const vault = new Vault(config.dataDir, config.vaultKey);
@@ -314,7 +268,6 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
   const validateOrigin = localhostOriginValidation();
   await mkdir(config.dataDir, { recursive: true });
   await vault.init();
-  if (oauth) await oauth.start();
   if (issued) {
     await issued.load();
     if (!config.adminToken) log('warning: --issue-tokens without --admin-token; anyone who can reach POST /tokens can get a token (sandbox only)');
@@ -350,7 +303,7 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
       }
       const entry: UserEntry = { user, browser: await createBrowserSession(user), lastActivity: Date.now(), sessions: new Set() };
       registry.addUser(entry);
-      log(`workspace ready for ${user}${principal.display ? ` (${principal.display})` : ''}`);
+      log(`workspace ready for ${user}`);
       return entry;
     })();
     creating.set(user, task);
@@ -377,20 +330,15 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
     };
   }
 
-  /** Identifies the caller from the Authorization header: static token first, then an OAuth access token. */
+  /** Identifies the caller from the Authorization header: static tokens first, then tokens issued through /tokens. */
   function authenticate(authorization: string | undefined, apiKey: string | undefined): Principal | undefined {
     if (unauthenticated) return { user: 'local' };
-    // Static tokens: "Authorization: Bearer <token>", a bare Authorization value, or X-API-Key (gateways with fixed header forms).
+    // "Authorization: Bearer <token>", a bare Authorization value, or X-API-Key (gateways with fixed header forms).
     const presented = bearerOf(authorization) ?? apiKey?.trim();
     const staticUser = presented ? tokens.userFor(presented) : undefined;
     if (staticUser) return { user: staticUser };
     const issuedUser = issued && presented ? issued.userFor(presented) : undefined;
     if (issuedUser) return { user: issuedUser };
-    if (oauth) {
-      const match = /^\s*Bearer\s+(\S+)\s*$/i.exec(authorization ?? '');
-      const user = match ? oauth.verifyAccessToken(match[1]!) : undefined;
-      if (user) return { user: user.user, display: user.nickname };
-    }
     return undefined;
   }
 
@@ -461,10 +409,9 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
     return true;
   }
 
-  function challenge(res: ServerResponse, tokenPresented: boolean, resourcePath: string): void {
+  function challenge(res: ServerResponse, tokenPresented: boolean): void {
     const parts = ['Bearer realm="browser-mcp"'];
     if (tokenPresented) parts.push('error="invalid_token"', 'error_description="The access token is missing, expired or revoked"');
-    if (oauth) parts.push(`resource_metadata="${oauth.protectedResourceMetadataUrl(resourcePath)}"`);
     sendJson(res, 401, { error: 'unauthorized' }, { 'www-authenticate': parts.join(', ') });
   }
 
@@ -508,7 +455,7 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
       onsessioninitialized: (id) => {
         entry.id = id;
         registry.addSession(entry);
-        log(`session ${short(id)} opened for ${user.user}${principal.display ? ` (${principal.display})` : ''} (${profile})`);
+        log(`session ${short(id)} opened for ${user.user} (${profile})`);
       },
       onsessionclosed: (id) => void registry.closeSession(id, 'closed by client'),
     });
@@ -561,8 +508,8 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
   }
 
   /**
-   * The tool catalogue for callers without any token: PlayMCP's console reads it when a
-   * server is registered, before anyone has logged in. No tool runs here, so the
+   * The tool catalogue for callers without any token: chat gateways read it when a
+   * server is registered, before a token is configured. No tool runs here, so the
    * browser session is never launched.
    */
   async function serveDiscovery(profile: ToolProfile, req: IncomingMessage, res: ServerResponse, body: unknown): Promise<void> {
@@ -580,64 +527,6 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
     await transport.handleRequest(req, res, body);
   }
 
-  async function handleOAuth(pathname: string, req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
-    if (!oauth) return false;
-    const method = req.method ?? 'GET';
-    const resourcePath =
-      pathname === PROTECTED_RESOURCE_PREFIX
-        ? '/mcp'
-        : pathname.startsWith(`${PROTECTED_RESOURCE_PREFIX}/`)
-          ? pathname.slice(PROTECTED_RESOURCE_PREFIX.length)
-          : undefined;
-    const isOAuthPath =
-      resourcePath !== undefined ||
-      pathname === '/.well-known/oauth-authorization-server' ||
-      pathname === '/register' ||
-      pathname === '/authorize' ||
-      pathname === '/oauth/kakao/callback' ||
-      pathname === '/token' ||
-      pathname === '/revoke';
-    if (!isOAuthPath) return false;
-    if (method === 'OPTIONS') {
-      res.writeHead(204, CORS_HEADERS);
-      res.end();
-      return true;
-    }
-    if (resourcePath !== undefined) {
-      if (!(resourcePath in PROFILES)) sendJson(res, 404, { error: 'not found' });
-      else sendJson(res, 200, oauth.protectedResourceMetadata(resourcePath), CORS_HEADERS);
-      return true;
-    }
-    switch (pathname) {
-      case '/.well-known/oauth-authorization-server':
-        sendJson(res, 200, oauth.authorizationServerMetadata(), CORS_HEADERS);
-        return true;
-      case '/register':
-        if (method !== 'POST') break;
-        sendOutcome(res, oauth.register(await readBody(req)));
-        return true;
-      case '/authorize':
-        if (method !== 'GET') break;
-        sendOutcome(res, await oauth.authorize(url.searchParams));
-        return true;
-      case '/oauth/kakao/callback':
-        if (method !== 'GET') break;
-        sendOutcome(res, await oauth.kakaoCallback(url.searchParams));
-        return true;
-      case '/token':
-        if (method !== 'POST') break;
-        sendOutcome(res, oauth.token(asForm(await readBody(req)), req.headers.authorization));
-        return true;
-      case '/revoke':
-        if (method !== 'POST') break;
-        sendOutcome(res, oauth.revoke(asForm(await readBody(req))));
-        return true;
-    }
-    res.writeHead(405, { allow: pathname === '/authorize' || pathname === '/oauth/kakao/callback' ? 'GET' : 'POST' });
-    res.end();
-    return true;
-  }
-
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const pathname = url.pathname.replace(/\/+$/, '') || '/';
@@ -650,7 +539,6 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
       });
       return;
     }
-    if (await handleOAuth(pathname, req, res, url)) return;
     if (await handleTokens(pathname, req, res)) return;
     // Hand-over pages are reached by people with a link, not by MCP clients with a token.
     if (await handoffs.handle(pathname, req, res)) return;
@@ -682,11 +570,11 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
         await serveDiscovery(profile, req, res, body);
         return;
       }
-      challenge(res, Boolean(req.headers.authorization || apiKey), pathname);
+      challenge(res, Boolean(req.headers.authorization || apiKey));
       return;
     }
     const { user } = principal;
-    const authInfo: AuthInfo = { token: 'opaque', clientId: user, scopes: ['browser'], extra: { user, display: principal.display } };
+    const authInfo: AuthInfo = { token: 'opaque', clientId: user, scopes: ['browser'], extra: { user } };
 
     if (sessionId) {
       const entry = registry.session(sessionId);
@@ -739,7 +627,6 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
   const authDescription = unauthenticated
     ? 'no authentication, loopback only'
     : [
-        oauth ? 'Kakao login' : undefined,
         tokens.size ? `${tokens.size} static token(s)` : undefined,
         issued ? `${issued.size} issued token(s)` : undefined,
       ]
@@ -761,7 +648,6 @@ export async function startHttpServer(config: Config): Promise<HttpServerHandle>
         await handoffs.close();
         secrets.close();
         await registry.closeAll('server shutting down');
-        if (oauth) await oauth.close();
         server.closeAllConnections();
         await new Promise<void>((resolve) => server.close(() => resolve()));
       })();

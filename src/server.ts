@@ -15,7 +15,7 @@ import { registerTabTools } from './tools/tabs.js';
  * Which tools a server exposes.
  * - full: every tool, for coding agents (Claude Code, Codex, Cursor, ...).
  * - lite: the chat-oriented subset with text-only results, no file paths and no
- *   scripting. It stays within the 20-tool limit that directories such as PlayMCP
+ *   scripting. It stays within the 20-tool limit that chat-service tool directories
  *   impose and leaves out tools whose results a chat UI cannot show (screenshots).
  */
 export type ToolProfile = 'full' | 'lite';

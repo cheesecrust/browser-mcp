@@ -13,19 +13,13 @@
 #
 # Before pasting, fill in the settings below. Afterwards: give the instance a static
 # IP, point the DNS A record of $DOMAIN at it, open only ports 80 and 443 in the
-# Lightsail firewall, and register https://$DOMAIN/oauth/kakao/callback as a
-# Redirect URI in Kakao Developers. Then https://$DOMAIN/healthz should answer.
+# Lightsail firewall. Then https://$DOMAIN/healthz should answer.
 #
 # ---- settings ------------------------------------------------------------------
 DOMAIN="browser.example.com"            # public host name whose DNS A record points at this instance
-KAKAO_CLIENT_ID=""                      # Kakao Developers > app > platform keys > REST API key
-KAKAO_CLIENT_SECRET=""                  # Kakao Developers > app > platform keys > REST API key > client secret
-ALLOWED_USERS=""                        # Kakao user ids and/or e-mails, comma separated; "*" allows everyone
-KAKAO_SCOPE=""                          # e.g. "account_email" when allowing users by e-mail
 STATIC_TOKENS=""                        # optional "token:user,token2:user2" (16+ character random tokens)
 ISSUE_TOKENS="false"                    # "true": the server issues tokens via POST /tokens and lists them via GET /tokens
 ADMIN_TOKEN=""                          # secret (16+ characters) required to call /tokens; empty = open endpoint (sandbox only)
-OAUTH_CLIENTS=""                        # optional pre-registered OAuth clients for PlayMCP: "id:secret[:redirect_uri]"
 VISIBLE_CHROME="true"                   # "true": real Google Chrome with a window under Xvfb, software WebGL and a Mac user agent (coupang.com refuses headless browsers; its login host still rejects this Linux box, see deploy/windows)
 REPO_URL="https://github.com/cheesecrust/browser-mcp.git"
 BRANCH="main"
@@ -45,8 +39,8 @@ main() {
     echo "ERROR: set DOMAIN to your real host name before pasting the script"
     exit 1
   fi
-  if [ -z "$KAKAO_CLIENT_ID" ] && [ -z "$STATIC_TOKENS" ] && [ "$ISSUE_TOKENS" != "true" ]; then
-    echo "ERROR: set KAKAO_CLIENT_ID (and KAKAO_CLIENT_SECRET), STATIC_TOKENS or ISSUE_TOKENS=true, otherwise nobody can log in"
+  if [ -z "$STATIC_TOKENS" ] && [ "$ISSUE_TOKENS" != "true" ]; then
+    echo "ERROR: set STATIC_TOKENS or ISSUE_TOKENS=true, otherwise nobody can log in"
     exit 1
   fi
   if [ -n "$ADMIN_TOKEN" ] && [ "${#ADMIN_TOKEN}" -lt 16 ]; then
@@ -90,14 +84,9 @@ main() {
       {
         echo "DOMAIN=$DOMAIN"
         echo "BROWSER_MCP_PUBLIC_URL=https://$DOMAIN"
-        [ -n "$KAKAO_CLIENT_ID" ] && echo "BROWSER_MCP_KAKAO_CLIENT_ID=$KAKAO_CLIENT_ID"
-        [ -n "$KAKAO_CLIENT_SECRET" ] && echo "BROWSER_MCP_KAKAO_CLIENT_SECRET=$KAKAO_CLIENT_SECRET"
-        [ -n "$ALLOWED_USERS" ] && echo "BROWSER_MCP_ALLOWED_USERS=$ALLOWED_USERS"
-        [ -n "$KAKAO_SCOPE" ] && echo "BROWSER_MCP_KAKAO_SCOPE=$KAKAO_SCOPE"
         [ -n "$STATIC_TOKENS" ] && echo "BROWSER_MCP_TOKENS=$STATIC_TOKENS"
         [ "$ISSUE_TOKENS" = "true" ] && echo "BROWSER_MCP_ISSUE_TOKENS=1"
         [ -n "$ADMIN_TOKEN" ] && echo "BROWSER_MCP_ADMIN_TOKEN=$ADMIN_TOKEN"
-        [ -n "$OAUTH_CLIENTS" ] && echo "BROWSER_MCP_OAUTH_CLIENTS=$OAUTH_CLIENTS"
         if [ "$VISIBLE_CHROME" = "true" ]; then
           echo "BROWSER_MCP_HEADLESS=0"
           echo "BROWSER_MCP_CHANNEL=chrome"

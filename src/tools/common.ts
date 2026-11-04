@@ -89,7 +89,7 @@ export function createRegistrar(server: McpServer, session: BrowserSession, hook
         title: spec.title,
         description: spec.description,
         inputSchema: z.object(spec.input),
-        // Directories such as PlayMCP expect the title inside annotations as well.
+        // Some tool directories expect the title inside annotations as well.
         annotations: { title: spec.title, ...spec.annotations },
       },
       async (args) =>
