@@ -213,6 +213,26 @@ sudo nano /opt/browser-mcp/.env                      # 예: BROWSER_MCP_ISSUE_TO
 cd /opt/browser-mcp && sudo docker compose --profile https up -d
 ```
 
+### Lightsail Windows에 올리기
+
+쿠팡처럼 로그인 페이지가 Linux 데스크톱 브라우저를 거부하고, 다른 OS로 위장하면 Akamai 센서가 환경값 모순으로 다시 거부하는 사이트는 Linux 컨테이너로는 로그인까지 가지 못합니다([문제 해결](#문제-해결) 참고). 주장하는 OS와 실제 OS가 같아야 하므로, Lightsail의 **Windows Server 2022** 인스턴스(라이선스 포함, 메모리 4 GB 이상 플랜)에 Docker 없이 네이티브로 올립니다. Windows UA가 진짜라서 UA, 화면 크기, WebGL 위장이 전부 필요 없고 자동화 플래그 제거만 남습니다. GPU가 없어 WebGL이 "Microsoft Basic Render Driver"로 나오지만 실제 Windows VM과 원격 데스크톱에서 흔한 값이라 OS와 모순되지 않습니다.
+
+1. Windows Server 2022, 4 GB 이상 플랜으로 인스턴스를 만들고 고정 IP를 붙인 뒤 도메인의 A 레코드를 그 IP로 설정합니다. Lightsail 방화벽은 80, 443과 RDP 3389(가능하면 내 IP로 제한)만 엽니다.
+2. 인스턴스 페이지 **Connect**에서 기본 Administrator 비밀번호를 확인하고 RDP로 접속합니다.
+3. `deploy/windows/lightsail-windows.ps1`을 인스턴스로 복사해 위쪽 설정값(`DOMAIN`, `KAKAO_CLIENT_ID`, `KAKAO_CLIENT_SECRET`, `ALLOWED_USERS`, `AUTOLOGON_PASSWORD` 등)을 채우고, 관리자 PowerShell에서 실행합니다.
+   ```powershell
+   Set-ExecutionPolicy Bypass -Scope Process -Force; .\lightsail-windows.ps1
+   ```
+   Chocolatey로 Git, Node.js LTS, Chrome, Caddy를 설치하고 `C:\browser-mcp`에 저장소를 받아 빌드한 뒤 `.env`를 쓰고 예약 작업 세 개를 등록합니다: `browser-mcp server`(사용자 로그온 시, `deploy\windows\run-server.ps1`), `browser-mcp caddy`(부팅 시 SYSTEM, HTTPS), `browser-mcp update`(매시간, 브랜치가 바뀌면 재빌드). 진행 로그는 `C:\browser-mcp-setup.log`, 서버 로그는 `C:\browser-mcp\logs\server.log`입니다.
+4. Kakao Developers의 Redirect URI에 `https://<도메인>/oauth/kakao/callback`을 등록하고 `https://<도메인>/healthz`를 확인합니다.
+
+Windows에서만 다른 점:
+
+- 창이 있는 Chrome은 **로그인된 데스크톱 세션**이 있어야 뜹니다. 스크립트가 `AUTOLOGON_PASSWORD`로 자동 로그온을 켜고 서버를 그 세션의 로그온 시 작업으로 등록하므로 재부팅 뒤에도 사람 없이 올라옵니다. 비밀번호를 비워 두면 재부팅마다 RDP로 한 번 로그인해야 서버가 시작됩니다.
+- RDP를 **그냥 닫으면 세션이 잠겨** Chrome이 화면을 그리지 않아 스크린샷과 사람에게 넘기기 화면이 비어 보입니다. 접속을 끊을 때는 세션 안에서 `deploy\windows\disconnect-rdp.cmd`를 관리자로 실행해 세션을 콘솔로 넘기세요.
+- Node는 `.env`를 스스로 읽지 않으므로 `run-server.ps1`이 `.env`를 환경 변수로 올린 뒤 `node dist\index.js --http`를 실행합니다. 설정을 바꾸면 `C:\browser-mcp\.env`를 고치고 작업 스케줄러에서 `browser-mcp server`를 끝냈다가 다시 시작하거나 `deploy\windows\update.ps1`을 실행합니다.
+- 한글 폰트(맑은 고딕)와 시간대(스크립트가 Korea Standard Time으로 설정)는 OS가 제공하므로 별도 설정이 없습니다.
+
 ### 클라이언트 등록
 
 카카오 로그인을 쓰는 서버는 주소만 등록하면 됩니다. 첫 연결 때 클라이언트가 브라우저로 카카오 로그인 창을 열고, 이후에는 토큰을 알아서 갱신합니다.
@@ -411,8 +431,16 @@ patchright는 사이트가 자동화를 탐지하는 데 쓰는 CDP 흔적(`Runt
 
 - **`Executable doesn't exist`**: `npx patchright install chromium` (또는 firefox/webkit)을 실행하세요. patchright 버전을 올린 뒤에도 다시 필요합니다.
 - **창이 뜨는 게 싫다면**: `--headless` 또는 `BROWSER_MCP_HEADLESS=1`.
-- **쿠팡 등에서 홈만 열어도 `403 Access Denied`(Akamai)**: IP 문제가 아닙니다. 같은 IP에서 헤드리스 브라우저와 `navigator.webdriver=true`인 브라우저는 403, 창이 있는 실제 Chrome에 `--disable-blink-features=AutomationControlled`를 준 경우는 200이 나옵니다. 그래서 세 가지가 함께 필요합니다: 창이 있는 모드(서버에서는 Xvfb, Docker 이미지는 `BROWSER_MCP_HEADLESS=0`이면 자동), `--channel chrome`(이미지에 Chrome 포함), `--browser-arg=--disable-blink-features=AutomationControlled`. 로컬에서는 `node dist/index.js --channel chrome --browser-arg=--disable-blink-features=AutomationControlled`입니다. 다만 이런 사이트는 이용약관으로 자동화 접근을 금지하고 행동 패턴으로도 다시 막을 수 있으니, 사용자 본인 계정으로 사람 속도로 쓰는 범위를 지키세요.
-- **쿠팡에서 홈은 열리는데 API만 403(인증번호 발송 "데이터 요청 실패" 등)**: Linux 지문 때문입니다. 쿠팡 원서버는 `X11; Linux` User-Agent의 API 호출(`/n-api/*`)을 403으로 막고, Akamai는 인증번호 API에서 UA나 `navigator.platform` 중 하나라도 Linux면 거부합니다. Docker의 Chrome은 Linux에서 돌므로 `BROWSER_MCP_USER_AGENT`에 Mac Chrome UA를 주세요(서버가 `navigator.platform`과 클라이언트 힌트도 macOS로 맞춥니다). Xvfb에는 GPU가 없어 WebGL이 비는 것도 봇 신호이므로 `--use-angle=swiftshader --enable-unsafe-swiftshader --ignore-gpu-blocklist`로 소프트웨어 WebGL을 켭니다. 시작 스크립트의 `VISIBLE_CHROME="true"`는 이 둘을 `.env`에 함께 넣습니다.
+- **쿠팡 등에서 홈만 열어도 `403 Access Denied`(Akamai)**: 세 가지 원인이 있고 모두 JS가 돌기 전 엣지에서 거부하는 것이라 쿠키와 무관합니다. (1) 헤드리스 브라우저나 `navigator.webdriver=true`인 브라우저. 창이 있는 실제 Chrome에 `--disable-blink-features=AutomationControlled`를 주면 통과합니다(서버에서는 Xvfb, Docker 이미지는 `BROWSER_MCP_HEADLESS=0`이면 자동, `--channel chrome`). 로컬에서는 `node dist/index.js --channel chrome --browser-arg=--disable-blink-features=AutomationControlled`입니다. (2) User-Agent와 클라이언트 힌트(`Sec-CH-UA-Platform`)가 서로 다른 OS를 말하는 경우. 같은 Mac에서 UA만 Linux로 바꾸고 힌트는 macOS로 두면 홈부터 403이고, 힌트까지 맞추면 200입니다. 서버는 `--user-agent`를 주면 힌트를 함께 맞추므로 `--browser-arg`로 UA를 따로 주지 마세요. (3) 같은 IP에서 403이 반복된 뒤의 IP 패널티. 쿠키를 지워도 첫 요청부터 403이면 이 경우이고 몇 시간 쉬는 것 외에 방법이 없으며, 재시도할수록 길어집니다. 이런 사이트는 이용약관으로 자동화 접근을 금지하니 사용자 본인 계정으로 사람 속도로 쓰는 범위를 지키세요.
+- **쿠팡에서 홈과 검색은 열리는데 로그인 페이지(`login.coupang.com`)가 403**: 브라우저가 보고하는 OS 문제이고, Linux 서버에서는 두 방향 모두 막힙니다. 같은 Mac, 같은 IP에서 UA·`navigator.platform`·클라이언트 힌트만 바꿔 측정한 결과(2026-11-04):
+
+  | 주장하는 OS | 홈 | `/n-api/*` | 로그인 페이지 |
+  |---|---|---|---|
+  | Mac (실제 OS) | 200 | 200 | 200 |
+  | Linux (일관되게) | 200 | 200 | 403 (HTML부터, 센서 전송 전) |
+  | Windows (일관되게, 하드웨어는 Mac) | 200 | 200 | 403 (홈 로드 중의 로그인 호스트 요청은 200, 센서 전송 뒤의 이동은 403) |
+
+  즉 로그인 호스트는 Linux 데스크톱 UA를 헤더 단계에서 거부하고, 다른 OS를 주장하면 Akamai 센서가 WebGL·폰트·`navigator.platform` 같은 환경값과 UA의 모순을 보고 거부합니다. 센서가 보는 것은 마우스 속도 같은 행동이 아니라 기기 정보라서, 진짜 Mac이나 Windows에서는 자동화로 열어도 통과합니다. 해결은 주장하는 OS와 실제 OS를 같게 만드는 것뿐입니다: [Lightsail Windows 인스턴스](#lightsail-windows에-올리기)를 쓰거나 Mac에서 서버를 돌리세요. Linux 컨테이너의 `BROWSER_MCP_USER_AGENT`(Mac UA)와 소프트웨어 WebGL 설정은 www 조회용으로만 기대하고, 로그인이 필요한 사이트에는 쓰지 마세요.
 - **사내 프록시 환경**: 브라우저는 셸의 `HTTP_PROXY` 환경 변수를 자동으로 따르지 않습니다. 외부 사이트가 열리지 않으면 `--proxy <url>`(또는 `BROWSER_MCP_PROXY`)을 지정하세요.
 - **서버 로그**: 모든 로그는 stderr로만 출력됩니다(stdout은 MCP 프로토콜 채널). Claude Code에서는 `claude mcp list` / 서버 로그로 확인할 수 있습니다.
 - **클라이언트가 종료됐는데 브라우저가 남아 있다면**: 서버는 stdin EOF 또는 SIGTERM을 받으면 브라우저를 닫습니다. 강제 종료(`kill -9`)된 경우에만 남을 수 있습니다.

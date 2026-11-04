@@ -26,7 +26,7 @@ STATIC_TOKENS=""                        # optional "token:user,token2:user2" (16
 ISSUE_TOKENS="false"                    # "true": the server issues tokens via POST /tokens and lists them via GET /tokens
 ADMIN_TOKEN=""                          # secret (16+ characters) required to call /tokens; empty = open endpoint (sandbox only)
 OAUTH_CLIENTS=""                        # optional pre-registered OAuth clients for PlayMCP: "id:secret[:redirect_uri]"
-VISIBLE_CHROME="true"                   # "true": real Google Chrome with a window under Xvfb, software WebGL and a Mac user agent (coupang.com refuses headless browsers and Linux fingerprints)
+VISIBLE_CHROME="true"                   # "true": real Google Chrome with a window under Xvfb, software WebGL and a Mac user agent (coupang.com refuses headless browsers; its login host still rejects this Linux box, see deploy/windows)
 REPO_URL="https://github.com/cheesecrust/browser-mcp.git"
 BRANCH="main"
 AUTO_UPDATE="true"                      # hourly: pull the branch and rebuild when it moved
