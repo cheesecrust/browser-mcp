@@ -1,4 +1,4 @@
-# browser-mcp: Lightsail / EC2 Windows Server setup (Windows Server 2022, PowerShell 5.1).
+# browser-mcp: Lightsail / EC2 Windows Server setup (Windows Server 2022 or 2025, PowerShell 5.1).
 #
 # Why Windows instead of the Linux image: login.coupang.com answers 403 to any Linux desktop
 # User-Agent before a page even loads, and Akamai's sensor rejects a browser whose User-Agent

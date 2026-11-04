@@ -191,9 +191,9 @@ cd /opt/browser-mcp && sudo docker compose --profile https up -d
 
 ### Lightsail Windows에 올리기
 
-쿠팡처럼 로그인 페이지가 Linux 데스크톱 브라우저를 거부하고, 다른 OS로 위장하면 Akamai 센서가 환경값 모순으로 다시 거부하는 사이트는 Linux 컨테이너로는 로그인까지 가지 못합니다([문제 해결](#문제-해결) 참고). 주장하는 OS와 실제 OS가 같아야 하므로, Lightsail의 **Windows Server 2022** 인스턴스(라이선스 포함, 메모리 4 GB 이상 플랜)에 Docker 없이 네이티브로 올립니다. Windows UA가 진짜라서 UA, 화면 크기, WebGL 위장이 전부 필요 없고 자동화 플래그 제거만 남습니다. GPU가 없어 WebGL이 "Microsoft Basic Render Driver"로 나오지만 실제 Windows VM과 원격 데스크톱에서 흔한 값이라 OS와 모순되지 않습니다.
+쿠팡처럼 로그인 페이지가 Linux 데스크톱 브라우저를 거부하고, 다른 OS로 위장하면 Akamai 센서가 환경값 모순으로 다시 거부하는 사이트는 Linux 컨테이너로는 로그인까지 가지 못합니다([문제 해결](#문제-해결) 참고). 주장하는 OS와 실제 OS가 같아야 하므로, Lightsail의 **Windows Server 2025**(또는 2022) 인스턴스(라이선스 포함, 메모리 4 GB 이상 플랜)에 Docker 없이 네이티브로 올립니다. Windows UA가 진짜라서 UA, 화면 크기, WebGL 위장이 전부 필요 없고 자동화 플래그 제거만 남습니다. GPU가 없어 WebGL이 "Microsoft Basic Render Driver"로 나오지만 실제 Windows VM과 원격 데스크톱에서 흔한 값이라 OS와 모순되지 않습니다.
 
-1. Windows Server 2022, 4 GB 이상 플랜으로 인스턴스를 만들고 고정 IP를 붙인 뒤 도메인의 A 레코드를 그 IP로 설정합니다. Lightsail 방화벽은 80, 443과 RDP 3389(가능하면 내 IP로 제한)만 엽니다.
+1. Windows Server 2025(또는 2022), 4 GB 이상 플랜으로 인스턴스를 만들고 고정 IP를 붙인 뒤 도메인의 A 레코드를 그 IP로 설정합니다. Lightsail 방화벽은 80, 443과 RDP 3389(가능하면 내 IP로 제한)만 엽니다.
 2. 인스턴스 페이지 **Connect**에서 기본 Administrator 비밀번호를 확인하고 RDP로 접속합니다.
 3. `deploy/windows/lightsail-windows.ps1`을 인스턴스로 복사해 위쪽 설정값(`DOMAIN`, `STATIC_TOKENS` 또는 `ISSUE_TOKENS`·`ADMIN_TOKEN`, `AUTOLOGON_PASSWORD` 등)을 채우고, 관리자 PowerShell에서 실행합니다.
    ```powershell
