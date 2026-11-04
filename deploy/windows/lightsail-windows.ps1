@@ -5,6 +5,12 @@
 # claims one OS while WebGL, fonts and navigator.platform say another. A Windows host needs no
 # disguise: Chrome reports real Windows values everywhere, so only the automation flag is removed.
 #
+# Measured 2026-11-04: this is NOT enough for coupang.com. On a Lightsail Windows instance the home
+# HTML loads but every /n-api/* call and the login SMS-code request answer 403, and a person opening
+# Chrome by hand over RDP on the same instance gets the same result: Akamai rejects the AWS datacenter
+# IP and VM environment itself, not the automation. For coupang.com run the server on a real machine
+# on a home/office network instead. This script remains useful for other sites that need Windows.
+#
 # How to run (once, as Administrator, inside an RDP session of the account that will keep
 # the browser's desktop — "Administrator" unless you changed AUTOLOGON_USER):
 #   1. Lightsail console > the instance > Connect using RDP (or any RDP client).

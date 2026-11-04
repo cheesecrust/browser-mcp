@@ -191,7 +191,9 @@ cd /opt/browser-mcp && sudo docker compose --profile https up -d
 
 ### Lightsail Windows에 올리기
 
-쿠팡처럼 로그인 페이지가 Linux 데스크톱 브라우저를 거부하고, 다른 OS로 위장하면 Akamai 센서가 환경값 모순으로 다시 거부하는 사이트는 Linux 컨테이너로는 로그인까지 가지 못합니다([문제 해결](#문제-해결) 참고). 주장하는 OS와 실제 OS가 같아야 하므로, Lightsail의 **Windows Server 2025**(또는 2022) 인스턴스(라이선스 포함, 메모리 4 GB 이상 플랜)에 Docker 없이 네이티브로 올립니다. Windows UA가 진짜라서 UA, 화면 크기, WebGL 위장이 전부 필요 없고 자동화 플래그 제거만 남습니다. GPU가 없어 WebGL이 "Microsoft Basic Render Driver"로 나오지만 실제 Windows VM과 원격 데스크톱에서 흔한 값이라 OS와 모순되지 않습니다.
+쿠팡처럼 로그인 페이지가 Linux 데스크톱 브라우저를 거부하는 사이트를 위해, 주장하는 OS와 실제 OS가 같은 **Windows Server 2025**(또는 2022) 인스턴스에 Docker 없이 네이티브로 올리는 구성입니다. Windows UA가 진짜라서 UA, 화면 크기, WebGL 위장이 전부 필요 없고 자동화 플래그 제거만 남습니다.
+
+> **쿠팡에는 이것으로도 부족합니다(2026-11-04 측정).** Lightsail Windows에서 홈 HTML은 열리지만 `/n-api/*`와 로그인의 인증번호 요청이 전부 403이고, 같은 인스턴스에서 **사람이 RDP로 Chrome을 직접 열어도 똑같이** 실패했습니다. 즉 자동화 탐지가 아니라 AWS 데이터센터 IP와 VM 환경(GPU "Microsoft Basic Render Driver", 2코어) 자체를 Akamai가 거부하는 것입니다. 쿠팡이 목적이면 클라우드가 아니라 집이나 사무실 망의 실제 기기(Mac 등)에서 서버를 돌리고 Cloudflare Tunnel이나 Tailscale로 접근하세요. Mac에서는 같은 자동화로 로그인까지 통과합니다([문제 해결](#문제-해결) 참고). 아래 절차는 Windows 브라우저가 필요한 다른 사이트에는 그대로 유효합니다.
 
 1. Windows Server 2025(또는 2022), 4 GB 이상 플랜으로 인스턴스를 만들고 고정 IP를 붙인 뒤 도메인의 A 레코드를 그 IP로 설정합니다. Lightsail 방화벽은 80, 443과 RDP 3389(가능하면 내 IP로 제한)만 엽니다.
 2. 인스턴스 페이지 **Connect**에서 기본 Administrator 비밀번호를 확인하고 RDP로 접속합니다.
@@ -371,7 +373,7 @@ patchright는 사이트가 자동화를 탐지하는 데 쓰는 CDP 흔적(`Runt
   | Linux (일관되게) | 200 | 200 | 403 (HTML부터, 센서 전송 전) |
   | Windows (일관되게, 하드웨어는 Mac) | 200 | 200 | 403 (홈 로드 중의 로그인 호스트 요청은 200, 센서 전송 뒤의 이동은 403) |
 
-  즉 로그인 호스트는 Linux 데스크톱 UA를 헤더 단계에서 거부하고, 다른 OS를 주장하면 Akamai 센서가 WebGL·폰트·`navigator.platform` 같은 환경값과 UA의 모순을 보고 거부합니다. 센서가 보는 것은 마우스 속도 같은 행동이 아니라 기기 정보라서, 진짜 Mac이나 Windows에서는 자동화로 열어도 통과합니다. 해결은 주장하는 OS와 실제 OS를 같게 만드는 것뿐입니다: [Lightsail Windows 인스턴스](#lightsail-windows에-올리기)를 쓰거나 Mac에서 서버를 돌리세요. Linux 컨테이너의 `BROWSER_MCP_USER_AGENT`(Mac UA)와 소프트웨어 WebGL 설정은 www 조회용으로만 기대하고, 로그인이 필요한 사이트에는 쓰지 마세요.
+  즉 로그인 호스트는 Linux 데스크톱 UA를 헤더 단계에서 거부하고, 다른 OS를 주장하면 Akamai 센서가 WebGL·폰트·`navigator.platform` 같은 환경값과 UA의 모순을 보고 거부합니다. 센서가 보는 것은 마우스 속도 같은 행동이 아니라 기기 정보라서, 진짜 Mac이나 Windows에서는 자동화로 열어도 통과합니다. 해결은 주장하는 OS와 실제 OS를 같게 만드는 것인데, [Lightsail Windows 인스턴스](#lightsail-windows에-올리기)는 OS 모순을 없애도 AWS IP·VM 환경 때문에 센서 단계에서 다시 거부됩니다(사람이 직접 열어도 동일). 실제로 통과한 것은 집·사무실 망의 Mac에서 돌린 서버뿐이므로, 쿠팡은 그 구성으로 쓰세요. Linux 컨테이너의 `BROWSER_MCP_USER_AGENT`(Mac UA)와 소프트웨어 WebGL 설정은 www 조회용으로만 기대하고, 로그인이 필요한 사이트에는 쓰지 마세요.
 - **사내 프록시 환경**: 브라우저는 셸의 `HTTP_PROXY` 환경 변수를 자동으로 따르지 않습니다. 외부 사이트가 열리지 않으면 `--proxy <url>`(또는 `BROWSER_MCP_PROXY`)을 지정하세요.
 - **서버 로그**: 모든 로그는 stderr로만 출력됩니다(stdout은 MCP 프로토콜 채널). Claude Code에서는 `claude mcp list` / 서버 로그로 확인할 수 있습니다.
 - **클라이언트가 종료됐는데 브라우저가 남아 있다면**: 서버는 stdin EOF 또는 SIGTERM을 받으면 브라우저를 닫습니다. 강제 종료(`kill -9`)된 경우에만 남을 수 있습니다.
