@@ -194,7 +194,7 @@ cd /opt/browser-mcp && sudo docker compose --profile https up -d
 
 주장하는 OS와 실제 OS가 같아야 하는 사이트를 위해, **Windows Server 2025**(또는 2022) 인스턴스에 Docker 없이 네이티브로 올리는 구성입니다. Windows UA가 진짜라서 UA, 화면 크기, WebGL 위장이 전부 필요 없고 자동화 플래그 제거만 남습니다.
 
-> **쿠팡에는 이것으로도 부족합니다(2026-11-04 측정).** Lightsail Windows에서 홈 HTML은 열리지만 `/n-api/*`와 로그인의 인증번호 요청이 전부 403이고, 같은 인스턴스에서 **사람이 RDP로 Chrome을 직접 열어도 똑같이** 실패했습니다. 즉 자동화 탐지가 아니라 AWS 데이터센터 IP를 Akamai가 거부하는 것입니다(VM 환경도 의심했지만, 2026-11-08 사무실 망의 GPU 없는 Linux 컨테이너가 주문까지 통과해 배제됐습니다). 쿠팡이 목적이면 클라우드가 아니라 집이나 사무실 망의 기기(Mac, Linux, Docker 컨테이너 모두 가능)에서 서버를 돌리고 Cloudflare Tunnel이나 Tailscale로 접근하세요. 그 환경에서는 같은 자동화로 로그인과 주문까지 통과합니다([문제 해결](#문제-해결) 참고). 아래 절차는 Windows 브라우저가 필요한 다른 사이트에는 그대로 유효합니다.
+> **쿠팡에는 이것으로도 부족합니다(2026-11-04 측정).** Lightsail Windows에서 홈 HTML은 열리지만 `/n-api/*`와 로그인의 인증번호 요청이 전부 403이고, 같은 인스턴스에서 **사람이 RDP로 Chrome을 직접 열어도 똑같이** 실패했습니다. 즉 자동화 탐지가 아니라 AWS 공인 IP(호스팅 ASN)를 Akamai가 거부하는 것입니다(VM 환경도 의심했지만, 2026-11-08 사내망 IP로 나가는 AWS 인스턴스의 GPU 없는 Linux 컨테이너가 주문까지 통과해 배제됐습니다). 쿠팡이 목적이면 출구 IP가 집이나 사무실 회선인 곳(Mac, Linux, Docker 컨테이너, 사내망과 연결된 VM 모두 가능)에서 서버를 돌리고 Cloudflare Tunnel이나 Tailscale로 접근하세요. 그 환경에서는 같은 자동화로 로그인과 주문까지 통과합니다([문제 해결](#문제-해결) 참고). 아래 절차는 Windows 브라우저가 필요한 다른 사이트에는 그대로 유효합니다.
 
 1. Windows Server 2025(또는 2022), 4 GB 이상 플랜으로 인스턴스를 만들고 고정 IP를 붙인 뒤 도메인의 A 레코드를 그 IP로 설정합니다. Lightsail 방화벽은 80, 443과 RDP 3389(가능하면 내 IP로 제한)만 엽니다.
 2. 인스턴스 페이지 **Connect**에서 기본 Administrator 비밀번호를 확인하고 RDP로 접속합니다.
@@ -376,9 +376,9 @@ patchright는 사이트가 자동화를 탐지하는 데 쓰는 CDP 흔적(`Runt
   | Linux (Mac이 흉내) | 200 | 200 | 403 (HTML부터, 센서 전송 전) |
   | Windows (Mac이 흉내) | 200 | 200 | 403 (홈 로드 중의 로그인 호스트 요청은 200, 센서 전송 뒤의 이동은 403) |
 
-  측정 2 (2026-11-08): 사무실 회선(기업 ASN)의 **GPU 없는 Linux 환경**(WebGL 컨텍스트 생성 실패, 즉 WebGL 자체가 없음; `--no-sandbox`와 X11 가상 화면으로 띄운 자동화용 Chrome 156)에서 기본 Linux UA(`X11; Linux x86_64`)와 `--disable-blink-features=AutomationControlled`만으로 홈·로그인·주문까지 전부 통과. 따라서 측정 1의 Linux 행이 막힌 것은 Linux UA 때문이 아니라 Mac 하드웨어가 Linux를 흉내 내며 생긴 모순(WebGL 렌더러, 폰트, 워커 안의 `navigator.platform` 등 바꿀 수 없는 값) 때문이었고, WebGL이 없거나 소프트웨어 렌더링인 것 자체는 거부 사유가 아닙니다. 센서가 보는 것은 마우스 속도 같은 행동이 아니라 기기 정보의 **일관성**이라서, 실제 OS를 그대로 보고하면 컨테이너에서 자동화로 열어도 통과합니다.
+  측정 2 (2026-11-08): **AWS 인스턴스이지만 사내망을 거쳐 나가서 출구 IP가 기업 ASN(AS7625 Kakao Corp)인** GPU 없는 Linux 환경(WebGL 컨텍스트 생성 실패, 즉 WebGL 자체가 없음; `--no-sandbox`와 X11 가상 화면으로 띄운 자동화용 Chrome 156)에서 기본 Linux UA(`X11; Linux x86_64`)와 `--disable-blink-features=AutomationControlled`만으로 홈·로그인·주문까지 전부 통과. 따라서 측정 1의 Linux 행이 막힌 것은 Linux UA 때문이 아니라 Mac 하드웨어가 Linux를 흉내 내며 생긴 모순(WebGL 렌더러, 폰트, 워커 안의 `navigator.platform` 등 바꿀 수 없는 값) 때문이었고, WebGL이 없거나 소프트웨어 렌더링인 것 자체는 거부 사유가 아닙니다. 센서가 보는 것은 마우스 속도 같은 행동이 아니라 기기 정보의 **일관성**이라서, 실제 OS를 그대로 보고하면 컨테이너에서 자동화로 열어도 통과합니다.
 
-  클라우드는 OS 모순을 없애도 막힙니다. [Lightsail Windows 인스턴스](#lightsail-windows에-올리기)는 사람이 직접 열어도 센서 단계에서 거부됐고, Lightsail Linux 컨테이너(2026-11-07, 새 고정 IP)는 Mac UA로 홈은 200이지만 로그인은 403이었습니다. 측정 2로 WebGL 유무와 가상 화면은 변수에서 빠졌으므로, 남는 차이는 **데이터센터(AWS) IP**입니다. 쿠팡은 집·사무실 망의 기기에서 돌린 서버로 쓰세요. 그 기기가 Mac이든 Linux든, Docker 컨테이너든 상관없고, UA는 바꾸지 말고 실제 OS 기본값으로 두세요. `BROWSER_MCP_USER_AGENT`(Mac UA)와 소프트웨어 WebGL 설정은 클라우드에서 www 조회용으로만 의미가 있습니다.
+  클라우드는 OS 모순을 없애도 막힙니다. [Lightsail Windows 인스턴스](#lightsail-windows에-올리기)는 사람이 직접 열어도 센서 단계에서 거부됐고, Lightsail Linux 컨테이너(2026-11-07, 새 고정 IP)는 Mac UA로 홈은 200이지만 로그인은 403이었습니다. 측정 2로 WebGL 유무, 가상 화면, 심지어 AWS 안에서 도는지 여부까지 변수에서 빠졌으므로, 남는 차이는 **쿠팡이 보는 출구 IP의 ASN**뿐입니다. AWS 공인 IP(호스팅 ASN)는 거부되고, 집·사무실 회선이나 기업 ASN의 IP로 나가면 통과합니다. 쿠팡은 출구 IP가 그런 회선인 곳에서 돌린 서버로 쓰세요. 기기가 Mac이든 Linux든, Docker 컨테이너든, 클라우드 VM이든 상관없고, UA는 바꾸지 말고 실제 OS 기본값으로 두세요. `BROWSER_MCP_USER_AGENT`(Mac UA)와 소프트웨어 WebGL 설정은 클라우드에서 www 조회용으로만 의미가 있습니다.
 - **사내 프록시 환경**: 브라우저는 셸의 `HTTP_PROXY` 환경 변수를 자동으로 따르지 않습니다. 외부 사이트가 열리지 않으면 `--proxy <url>`(또는 `BROWSER_MCP_PROXY`)을 지정하세요.
 - **서버 로그**: 모든 로그는 stderr로만 출력됩니다(stdout은 MCP 프로토콜 채널). Claude Code에서는 `claude mcp list` / 서버 로그로 확인할 수 있습니다.
 - **클라이언트가 종료됐는데 브라우저가 남아 있다면**: 서버는 stdin EOF 또는 SIGTERM을 받으면 브라우저를 닫습니다. 강제 종료(`kill -9`)된 경우에만 남을 수 있습니다.
