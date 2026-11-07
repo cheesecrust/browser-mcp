@@ -190,6 +190,45 @@ sudo nano /opt/browser-mcp/.env                      # 예: BROWSER_MCP_ISSUE_TO
 cd /opt/browser-mcp && sudo docker compose --profile https up -d
 ```
 
+### 브라우저 트래픽만 집 회선으로 내보내기 (Lightsail + Tailscale)
+
+서버는 Lightsail에 두되 Chrome이 나가는 IP만 집(또는 사무실) 회선으로 바꾸는 구성입니다. 쿠팡처럼 호스팅 IP를
+거부하는 사이트용이고([문제 해결](#문제-해결) 참고), 서버로 들어오는 MCP·HTTPS 연결은 그대로 AWS IP를 씁니다.
+집에 항상 켜진 기기(라즈베리파이, 안 쓰는 노트북 등 sshd가 도는 것)가 하나 필요하고, Lightsail 호스트와 그 기기를
+Tailscale로 묶은 뒤 Lightsail에서 집 기기로 SSH SOCKS 터널을 열어 Chrome이 그 터널을 쓰게 합니다. Tailscale의
+exit node는 쓰지 않습니다. 호스트 전체의 기본 경로가 집으로 바뀌어 공인 IP로 들어온 연결의 응답이 끊기기 때문입니다.
+
+1. **집 기기**: Tailscale을 설치해 `tailscale up`으로 테일넷에 넣고 SSH 서버를 켭니다(Mac은 시스템 설정의 원격 로그인). `tailscale ip -4`로 테일넷 주소(`100.x.x.x`)를 적어 둡니다.
+2. **Lightsail 호스트**: Tailscale을 설치해 같은 테일넷에 넣고, 집 기기로 SSH 키를 등록한 뒤 SOCKS 터널을 systemd 서비스로 띄웁니다. 터널의 출구가 집 기기이므로 이 포트로 나간 트래픽은 모두 집 IP가 됩니다.
+   ```bash
+   curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up
+   sudo ssh-keygen -t ed25519 -N '' -f /root/.ssh/home_tunnel && sudo cat /root/.ssh/home_tunnel.pub   # 집 기기의 ~/.ssh/authorized_keys에 추가
+   sudo ssh -i /root/.ssh/home_tunnel -o StrictHostKeyChecking=accept-new <집사용자>@100.x.x.x true  # 호스트 키 등록 겸 접속 확인
+   sudo tee /etc/systemd/system/home-socks.service > /dev/null <<'EOF'
+   [Unit]
+   Description=SOCKS5 tunnel whose exit is the home machine (for browser-mcp)
+   After=network-online.target tailscaled.service
+   [Service]
+   ExecStart=/usr/bin/ssh -i /root/.ssh/home_tunnel -N -D 0.0.0.0:1080 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes <집사용자>@100.x.x.x
+   Restart=always
+   RestartSec=5
+   [Install]
+   WantedBy=multi-user.target
+   EOF
+   sudo systemctl enable --now home-socks
+   curl --socks5-hostname 127.0.0.1:1080 https://ifconfig.me    # 집 IP가 나와야 함
+   ```
+   1080 포트는 Lightsail 방화벽이 80·443만 열어 두므로 밖에서 닿지 않지만, 컨테이너가 호스트의 1080에 닿아야 하므로 `127.0.0.1`이 아니라 `0.0.0.0`에 바인드합니다.
+3. **browser-mcp**: `.env`에 프록시를 넣고, 집 IP로 나가므로 UA 위장은 뺀 뒤 다시 올립니다. compose 파일의 `host.docker.internal`은 호스트를 가리키도록 이미 설정돼 있습니다.
+   ```bash
+   sudo sed -i '/^BROWSER_MCP_USER_AGENT=/d' /opt/browser-mcp/.env
+   echo 'BROWSER_MCP_PROXY=socks5://host.docker.internal:1080' | sudo tee -a /opt/browser-mcp/.env > /dev/null
+   cd /opt/browser-mcp && sudo docker compose --profile https up -d
+   ```
+4. **확인**: MCP로 `https://ifconfig.me`를 열어 IP가 집 회선(통신사 ASN)인지 보고, 그다음 대상 사이트의 홈 → 로그인 페이지를 **한 번만** 엽니다. 403이 나오면 재시도하지 말고 원인을 찾으세요(집 IP에도 패널티가 걸립니다).
+
+Chrome은 SOCKS5 프록시에 호스트 이름을 넘기므로 DNS 조회도 집에서 이루어지고, WebRTC 같은 프록시 우회 경로는 서버 브라우저에서 쓰이지 않습니다. 집 기기가 꺼지면 터널이 끊겨 브라우저의 모든 페이지가 열리지 않으니(프록시 오류), 그때는 `systemctl status home-socks`부터 보세요.
+
 ### Lightsail Windows에 올리기
 
 주장하는 OS와 실제 OS가 같아야 하는 사이트를 위해, **Windows Server 2025**(또는 2022) 인스턴스에 Docker 없이 네이티브로 올리는 구성입니다. Windows UA가 진짜라서 UA, 화면 크기, WebGL 위장이 전부 필요 없고 자동화 플래그 제거만 남습니다.

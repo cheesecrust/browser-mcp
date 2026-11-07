@@ -20,6 +20,10 @@ services:
     shm_size: "1gb"
     # A real init as PID 1: forwards signals and reaps the helper processes Chrome and Xvfb leave behind.
     init: true
+    # Lets the container reach a proxy that listens on the host, e.g. BROWSER_MCP_PROXY=socks5://host.docker.internal:1080
+    # (README: "브라우저 트래픽만 집 회선으로 내보내기").
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${BROWSER_MCP_BIND:-127.0.0.1}:3000:3000"
 
