@@ -155,7 +155,8 @@ docker compose --profile https up -d --build   # Caddy가 $DOMAIN 의 인증서�
 `BROWSER_MCP_HEADLESS=0`을 주면 엔트리포인트가 Xvfb(가상 디스플레이) 위에서 서버를 띄워 브라우저가 창이 있는
 상태로 돌고, `BROWSER_MCP_CHANNEL=chrome`을 함께 주면 그 창이 Chromium 대신 Chrome이 됩니다. 쿠팡처럼 헤드리스
 브라우저를 403으로 거부하는 사이트에 필요합니다(아래 문제 해결 참고). 가상 디스플레이 해상도는
-`BROWSER_MCP_XVFB_SCREEN`(기본 `1920x1080x24`)으로 바꿉니다. 이미지는 브라우저 시계를 `BROWSER_MCP_TIMEZONE`(기본 `Asia/Seoul`)에
+`BROWSER_MCP_XVFB_SCREEN`(기본 `1920x1080x24`)으로 바꿉니다. 엔트리포인트는 Xvfb를 감시해 죽으면 다시 띄우고(그 순간 열려 있던
+브라우저는 함께 닫히며 다음 도구 호출 때 새로 뜸), 컨테이너 재시작으로 `/tmp`에 남은 이전 Xvfb의 lock 파일은 기동 전에 지웁니다. 이미지는 브라우저 시계를 `BROWSER_MCP_TIMEZONE`(기본 `Asia/Seoul`)에
 맞추고 한글 폰트(Noto Sans CJK, 나눔)를 넣어 둡니다. 컨테이너의 UTC 시계와 폰트 없는 글꼴 목록은 사이트가 서버 브라우저를
 알아보는 단서가 되기 때문입니다.
 
@@ -381,4 +382,5 @@ patchright는 사이트가 자동화를 탐지하는 데 쓰는 CDP 흔적(`Runt
 - **HTTP 모드에서 `Session not found`**: 유휴 시간이 지나 세션이 닫혔거나 서버가 재시작된 경우입니다. 클라이언트를 다시 연결하면 새 세션이 열리고 로그인 상태는 복원됩니다.
 - **`Cannot open ...: ... private or reserved address`**: 네트워크 정책이 사설망 접근을 막은 것입니다. 사내망 사이트가 대상이면 `--allow-private-network`를 주세요.
 - **Lightsail에서 `/var/log/browser-mcp-setup.log`가 없다면**: 시작 스크립트가 실행되지 않은 것입니다. `sudo tail /var/log/cloud-init-output.log`로 원인을 보고, 위의 "직접 받아 실행" 방법으로 설치하세요.
+- **Docker에서 `headed browser without having a XServer running`으로 브라우저가 안 뜬다면**: 컨테이너 로그에 `(EE) Server is already active for display 99`가 있을 것입니다. `docker compose restart`는 컨테이너의 `/tmp`를 그대로 두므로 이전 Xvfb의 lock 파일이 남아 새 Xvfb가 바로 종료된 경우입니다. 현재 엔트리포인트는 기동 전에 그 파일을 지우고 Xvfb가 죽으면 다시 띄우므로, 예전 이미지라면 `docker compose up -d --build`로 다시 만들면 해결됩니다. 컨테이너 안에서 `pgrep -a Xvfb`가 `<defunct>`만 보여 주면 이 경우입니다.
 - **Docker에서 탭이 죽는다면**: `/dev/shm`이 작아서입니다. compose 파일의 `shm_size: 1gb`를 유지하거나 `docker run --shm-size=1g`를 쓰세요.
