@@ -192,9 +192,9 @@ cd /opt/browser-mcp && sudo docker compose --profile https up -d
 
 ### Lightsail Windows에 올리기
 
-쿠팡처럼 로그인 페이지가 Linux 데스크톱 브라우저를 거부하는 사이트를 위해, 주장하는 OS와 실제 OS가 같은 **Windows Server 2025**(또는 2022) 인스턴스에 Docker 없이 네이티브로 올리는 구성입니다. Windows UA가 진짜라서 UA, 화면 크기, WebGL 위장이 전부 필요 없고 자동화 플래그 제거만 남습니다.
+주장하는 OS와 실제 OS가 같아야 하는 사이트를 위해, **Windows Server 2025**(또는 2022) 인스턴스에 Docker 없이 네이티브로 올리는 구성입니다. Windows UA가 진짜라서 UA, 화면 크기, WebGL 위장이 전부 필요 없고 자동화 플래그 제거만 남습니다.
 
-> **쿠팡에는 이것으로도 부족합니다(2026-11-04 측정).** Lightsail Windows에서 홈 HTML은 열리지만 `/n-api/*`와 로그인의 인증번호 요청이 전부 403이고, 같은 인스턴스에서 **사람이 RDP로 Chrome을 직접 열어도 똑같이** 실패했습니다. 즉 자동화 탐지가 아니라 AWS 데이터센터 IP와 VM 환경(GPU "Microsoft Basic Render Driver", 2코어) 자체를 Akamai가 거부하는 것입니다. 쿠팡이 목적이면 클라우드가 아니라 집이나 사무실 망의 실제 기기(Mac 등)에서 서버를 돌리고 Cloudflare Tunnel이나 Tailscale로 접근하세요. Mac에서는 같은 자동화로 로그인까지 통과합니다([문제 해결](#문제-해결) 참고). 아래 절차는 Windows 브라우저가 필요한 다른 사이트에는 그대로 유효합니다.
+> **쿠팡에는 이것으로도 부족합니다(2026-11-04 측정).** Lightsail Windows에서 홈 HTML은 열리지만 `/n-api/*`와 로그인의 인증번호 요청이 전부 403이고, 같은 인스턴스에서 **사람이 RDP로 Chrome을 직접 열어도 똑같이** 실패했습니다. 즉 자동화 탐지가 아니라 AWS 데이터센터 IP와 VM 환경(GPU "Microsoft Basic Render Driver", 2코어) 자체를 Akamai가 거부하는 것입니다. 쿠팡이 목적이면 클라우드가 아니라 집이나 사무실 망의 실제 기기(Mac, Linux 등 OS 불문)에서 서버를 돌리고 Cloudflare Tunnel이나 Tailscale로 접근하세요. 실제 기기에서는 같은 자동화로 로그인과 주문까지 통과합니다([문제 해결](#문제-해결) 참고). 아래 절차는 Windows 브라우저가 필요한 다른 사이트에는 그대로 유효합니다.
 
 1. Windows Server 2025(또는 2022), 4 GB 이상 플랜으로 인스턴스를 만들고 고정 IP를 붙인 뒤 도메인의 A 레코드를 그 IP로 설정합니다. Lightsail 방화벽은 80, 443과 RDP 3389(가능하면 내 IP로 제한)만 엽니다.
 2. 인스턴스 페이지 **Connect**에서 기본 Administrator 비밀번호를 확인하고 RDP로 접속합니다.
@@ -366,15 +366,19 @@ patchright는 사이트가 자동화를 탐지하는 데 쓰는 CDP 흔적(`Runt
 - **`Executable doesn't exist`**: `npx patchright install chromium` (또는 firefox/webkit)을 실행하세요. patchright 버전을 올린 뒤에도 다시 필요합니다.
 - **창이 뜨는 게 싫다면**: `--headless` 또는 `BROWSER_MCP_HEADLESS=1`.
 - **쿠팡 등에서 홈만 열어도 `403 Access Denied`(Akamai)**: 2026-11-07 Lightsail(Ubuntu, Docker, Mac UA) 측정으로 확인한 것은 **같은 IP에 걸리는 패널티**입니다. 403을 몇 번 받은 뒤에는 쿠키를 지워도, UA를 바꿔도 홈부터 403이었고, 4시간 뒤 첫 요청은 200, 그 직후 403을 한 번 더 받자 다시 403, 고정 IP를 새로 받아 붙이자 바로 홈 200이었습니다. AWS 대역 자체를 막는 것이 아니라 403이 쌓인 IP를 한동안 막는 것이므로, 403이 나오면 재시도하지 말고(한 번마다 길어짐) 몇 시간 쉬거나 Lightsail에서 고정 IP를 새로 받으세요. 낡은 봇 방어 쿠키(`_abck`, `bm_sz` 등)는 `browser_clear_cookies`로 먼저 지워 두는 것이 안전하지만, 이날 측정에서는 쿠키 삭제만으로 풀린 경우가 없었습니다. 그 밖의 원인은 아래 세 가지이고, 모두 JS가 돌기 전 엣지에서 거부하는 것입니다. (1) 헤드리스 브라우저나 `navigator.webdriver=true`인 브라우저. 창이 있는 실제 Chrome에 `--disable-blink-features=AutomationControlled`를 주면 통과합니다(서버에서는 Xvfb, Docker 이미지는 `BROWSER_MCP_HEADLESS=0`이면 자동, `--channel chrome`). 로컬에서는 `node dist/index.js --channel chrome --browser-arg=--disable-blink-features=AutomationControlled`입니다. (2) User-Agent와 클라이언트 힌트(`Sec-CH-UA-Platform`)가 서로 다른 OS를 말하는 경우. 같은 Mac에서 UA만 Linux로 바꾸고 힌트는 macOS로 두면 홈부터 403이고, 힌트까지 맞추면 200입니다. 서버는 `--user-agent`를 주면 힌트를 함께 맞추므로 `--browser-arg`로 UA를 따로 주지 마세요. (3) 같은 IP에서 403이 반복된 뒤의 IP 패널티(위 측정). 쿠키를 지워도 첫 요청부터 403이면 이 경우이고, 몇 시간 쉬거나 IP를 바꾸는 것 외에 방법이 없으며, 재시도할수록 길어집니다. 이런 사이트는 이용약관으로 자동화 접근을 금지하니 사용자 본인 계정으로 사람 속도로 쓰는 범위를 지키세요.
-- **쿠팡에서 홈과 검색은 열리는데 로그인 페이지(`login.coupang.com`)가 403**: 브라우저가 보고하는 OS 문제이고, Linux 서버에서는 두 방향 모두 막힙니다. 같은 Mac, 같은 IP에서 UA·`navigator.platform`·클라이언트 힌트만 바꿔 측정한 결과(2026-11-04):
+- **쿠팡에서 홈과 검색은 열리는데 로그인 페이지(`login.coupang.com`)가 403**: 브라우저가 주장하는 OS와 실제 환경이 다르거나, 데이터센터 IP·VM에서 도는 경우입니다. 통과 조건은 **주장하는 OS = 실제 OS, 그리고 집·사무실 회선의 실제 기기**이고, OS 자체는 Mac이든 Linux든 상관없습니다.
+
+  측정 1 (2026-11-04, 같은 Mac·같은 IP에서 UA·`navigator.platform`·클라이언트 힌트만 바꿈):
 
   | 주장하는 OS | 홈 | `/n-api/*` | 로그인 페이지 |
   |---|---|---|---|
   | Mac (실제 OS) | 200 | 200 | 200 |
-  | Linux (일관되게) | 200 | 200 | 403 (HTML부터, 센서 전송 전) |
-  | Windows (일관되게, 하드웨어는 Mac) | 200 | 200 | 403 (홈 로드 중의 로그인 호스트 요청은 200, 센서 전송 뒤의 이동은 403) |
+  | Linux (Mac이 흉내) | 200 | 200 | 403 (HTML부터, 센서 전송 전) |
+  | Windows (Mac이 흉내) | 200 | 200 | 403 (홈 로드 중의 로그인 호스트 요청은 200, 센서 전송 뒤의 이동은 403) |
 
-  즉 로그인 호스트는 Linux 데스크톱 UA를 헤더 단계에서 거부하고, 다른 OS를 주장하면 Akamai 센서가 WebGL·폰트·`navigator.platform` 같은 환경값과 UA의 모순을 보고 거부합니다. 센서가 보는 것은 마우스 속도 같은 행동이 아니라 기기 정보라서, 진짜 Mac이나 Windows에서는 자동화로 열어도 통과합니다. 해결은 주장하는 OS와 실제 OS를 같게 만드는 것인데, [Lightsail Windows 인스턴스](#lightsail-windows에-올리기)는 OS 모순을 없애도 AWS IP·VM 환경 때문에 센서 단계에서 다시 거부됩니다(사람이 직접 열어도 동일). 실제로 통과한 것은 집·사무실 망의 Mac에서 돌린 서버뿐이므로, 쿠팡은 그 구성으로 쓰세요. Linux 컨테이너의 `BROWSER_MCP_USER_AGENT`(Mac UA)와 소프트웨어 WebGL 설정은 www 조회용으로만 기대하고, 로그인이 필요한 사이트에는 쓰지 마세요.
+  측정 2 (2026-11-08): 사무실 회선(기업 ASN)의 **실제 Linux 기기**에서 기본 Linux UA(`X11; Linux x86_64`, Chrome 156)로 홈·로그인·주문까지 전부 통과. 따라서 측정 1의 Linux 행이 막힌 것은 Linux UA 때문이 아니라 Mac 하드웨어가 Linux를 흉내 내며 생긴 모순(WebGL 렌더러, 폰트, 워커 안의 `navigator.platform` 등 바꿀 수 없는 값) 때문이었습니다. 센서가 보는 것은 마우스 속도 같은 행동이 아니라 기기 정보라서, 실제 기기에서는 자동화로 열어도 통과합니다.
+
+  클라우드는 OS 모순을 없애도 막힙니다. [Lightsail Windows 인스턴스](#lightsail-windows에-올리기)는 사람이 직접 열어도 AWS IP·VM 환경 때문에 센서 단계에서 거부됐고, Lightsail Linux 컨테이너(2026-11-07, 새 고정 IP)는 Mac UA로 홈은 200이지만 로그인은 403이었습니다. 쿠팡은 집·사무실 망의 실제 기기(Mac, Linux)에서 돌린 서버로 쓰세요. Linux 컨테이너의 `BROWSER_MCP_USER_AGENT`(Mac UA)와 소프트웨어 WebGL 설정은 클라우드에서 www 조회용으로만 기대하고, 실제 Linux 기기에서는 UA를 바꾸지 말고 기본값(Linux)으로 두세요.
 - **사내 프록시 환경**: 브라우저는 셸의 `HTTP_PROXY` 환경 변수를 자동으로 따르지 않습니다. 외부 사이트가 열리지 않으면 `--proxy <url>`(또는 `BROWSER_MCP_PROXY`)을 지정하세요.
 - **서버 로그**: 모든 로그는 stderr로만 출력됩니다(stdout은 MCP 프로토콜 채널). Claude Code에서는 `claude mcp list` / 서버 로그로 확인할 수 있습니다.
 - **클라이언트가 종료됐는데 브라우저가 남아 있다면**: 서버는 stdin EOF 또는 SIGTERM을 받으면 브라우저를 닫습니다. 강제 종료(`kill -9`)된 경우에만 남을 수 있습니다.
