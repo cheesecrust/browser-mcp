@@ -337,8 +337,12 @@ export class BrowserSession {
     // values) and navigator.languages = ["ko-KR"], which no real Chrome does and which bot
     // defenses read as an automation signature. Chrome's own --lang produces the natural list
     // ("ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"), so the locale goes in as a launch flag there.
+    // --lang alone is ignored on macOS (the system locale wins) and leaves the header at the profile
+    // default elsewhere; --accept-lang pins the language and Chrome expands it the way it would for a
+    // user who picked it ("ko-KR" → "ko-KR,ko;q=0.9"). Chrome keeps only the first entry of the flag.
     const chromiumLocale = config.browser === 'chromium' && config.locale;
-    const args = [...(chromiumLocale ? [`--lang=${config.locale}`] : []), ...config.browserArgs];
+    const localeArgs = chromiumLocale ? [`--lang=${config.locale}`, `--accept-lang=${config.locale}`] : [];
+    const args = [...localeArgs, ...config.browserArgs];
     const launchOptions: LaunchOptions = compact({
       headless: config.headless,
       channel: config.channel,
