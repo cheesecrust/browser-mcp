@@ -313,7 +313,7 @@ ChatGPT 웹과 Claude.ai의 커스텀 커넥터는 OAuth 서버를 요구하므�
 | `--timeout <ms>` | `BROWSER_MCP_TIMEOUT` | `15000` | 요소 액션 타임아웃 |
 | `--navigation-timeout <ms>` | `BROWSER_MCP_NAVIGATION_TIMEOUT` | `30000` | 페이지 이동 타임아웃 |
 | `--user-agent <ua>` | `BROWSER_MCP_USER_AGENT` | | User-Agent 지정. Chromium에서는 `navigator.platform`과 클라이언트 힌트(Sec-CH-UA-Platform)도 그 UA의 OS에 맞춰 페이지와 cross-origin iframe에서 함께 바꿉니다. 웹 워커 안의 `navigator.platform`은 Chrome이 오버라이드를 무시해 호스트 OS가 그대로 보입니다 |
-| `--locale <locale>` | `BROWSER_MCP_LOCALE` | | 브라우저 로케일 (`ko-KR` 등) |
+| `--locale <locale>` | `BROWSER_MCP_LOCALE` | | 브라우저 로케일 (`ko-KR` 등). Chromium에서는 Chrome의 `--lang`으로 전달되어 Accept-Language가 실제 Chrome처럼 `ko-KR,ko;q=0.9,…` 목록이 됨(Playwright의 locale 옵션은 `ko-KR` 한 값만 보내는데, 이는 자동화 흔적으로 읽힘) |
 | `--timezone <id>` | `BROWSER_MCP_TIMEZONE` | 호스트 시간대 (Docker 이미지는 `Asia/Seoul`) | 브라우저 시간대. 브라우저 프로세스의 `TZ`로 전달되어 페이지와 워커 모두에 적용 |
 | `--ignore-https-errors` | `BROWSER_MCP_IGNORE_HTTPS_ERRORS` | off | 인증서 오류 무시 |
 | `--snapshot-max-chars <n>` | `BROWSER_MCP_SNAPSHOT_MAX_CHARS` | `30000` | 스냅샷 최대 길이 |

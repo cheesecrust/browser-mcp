@@ -95,6 +95,17 @@ interface PlatformEmulation {
 }
 
 /**
+ * The Accept-Language header Chrome builds for a UI locale: the locale, its base language and
+ * English as fallbacks, with descending q values ("ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7").
+ * A single tag without q values is what Playwright's locale option sends, and no real Chrome does.
+ */
+export function acceptLanguageFor(locale: string): string {
+  const base = locale.split(/[-_]/)[0];
+  const tags = [...new Set([locale, base, 'en-US', 'en'])];
+  return tags.map((tag, i) => (i === 0 ? tag : `${tag};q=${(1 - i / 10).toFixed(1)}`)).join(',');
+}
+
+/**
  * The navigator.platform and client-hint values a real browser with this user agent would
  * report. A user-agent override alone leaves navigator.platform at the host OS, and sites
  * such as Akamai-protected ones refuse requests when the two disagree (or when either says
@@ -322,11 +333,17 @@ export class BrowserSession {
   private async launch(): Promise<BrowserContext> {
     const { config } = this;
     const engine = ENGINES[config.browser];
+    // Playwright's `locale` option makes Chromium send "Accept-Language: ko-KR" (one tag, no q
+    // values) and navigator.languages = ["ko-KR"], which no real Chrome does and which bot
+    // defenses read as an automation signature. Chrome's own --lang produces the natural list
+    // ("ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"), so the locale goes in as a launch flag there.
+    const chromiumLocale = config.browser === 'chromium' && config.locale;
+    const args = [...(chromiumLocale ? [`--lang=${config.locale}`] : []), ...config.browserArgs];
     const launchOptions: LaunchOptions = compact({
       headless: config.headless,
       channel: config.channel,
       executablePath: config.executablePath,
-      args: config.browserArgs.length ? config.browserArgs : undefined,
+      args: args.length ? args : undefined,
       proxy: config.proxy ? compact({ server: config.proxy, bypass: config.proxyBypass }) : undefined,
       // TZ reaches every part of the browser (pages, workers, Date and Intl alike), unlike the
       // per-page timezone emulation of the context options.
@@ -337,7 +354,7 @@ export class BrowserSession {
       screen: config.screen,
       ignoreHTTPSErrors: config.ignoreHttpsErrors,
       userAgent: config.userAgent,
-      locale: config.locale,
+      locale: chromiumLocale ? undefined : config.locale,
       acceptDownloads: true,
     });
 
@@ -654,7 +671,7 @@ export class BrowserSession {
     if (!emulation) return;
     const override = {
       userAgent: config.userAgent,
-      acceptLanguage: config.locale,
+      acceptLanguage: config.locale ? acceptLanguageFor(config.locale) : undefined,
       platform: emulation.platform,
       userAgentMetadata: emulation.metadata,
     };
